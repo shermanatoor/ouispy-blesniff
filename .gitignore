@@ -11,3 +11,4 @@ firmware/build/
 tools/hwtest/crash_probe.log
 .ids-cache/
 *.exe
+tools/hosttest/dashboard/node_modules/
