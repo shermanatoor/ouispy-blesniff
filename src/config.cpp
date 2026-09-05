@@ -32,7 +32,11 @@ void clamp() {
     // starves SoftAP beacons and locks the dashboard out. Cap at half.
     const uint16_t maxw = max_window_for(cfg.scan_interval_ms);
     if (cfg.scan_window_ms > maxw) cfg.scan_window_ms = maxw;
-    if (cfg.ft_mask == 0)                      cfg.ft_mask = FT_DEFAULT;
+    // Unchecking every box in one group used to leave a non-zero mask that
+    // the address gate (or type gate) then rejected everything against, so
+    // the dashboard just went silent. Empty group -> that gate wide open.
+    if ((cfg.ft_mask & FT_TYPE_BITS) == 0)     cfg.ft_mask |= FT_TYPE_BITS;
+    if ((cfg.ft_mask & FT_ADDR_BITS) == 0)     cfg.ft_mask |= FT_ADDR_BITS;
     if (strlen(cfg.ap_ssid) == 0)              strlcpy(cfg.ap_ssid, "ouispy-blesniff", sizeof(cfg.ap_ssid));
     size_t pl = strlen(cfg.ap_pass);
     if (pl < 8 || pl > 63)                     strlcpy(cfg.ap_pass, "sniffuntothem", sizeof(cfg.ap_pass));
@@ -74,7 +78,7 @@ void reset_defaults() {
 
 void set_scan_window(uint16_t ms)   { cfg.scan_window_ms = ms;   save(); }
 void set_scan_interval(uint16_t ms) { cfg.scan_interval_ms = ms; save(); }
-void set_ftmask(uint8_t m)          { cfg.ft_mask = m ? m : FT_DEFAULT; save(); }
+void set_ftmask(uint8_t m)          { cfg.ft_mask = m; save(); }   // save() normalizes
 
 void set_scan_params(uint16_t window_ms, uint16_t interval_ms) {
     cfg.scan_window_ms   = window_ms;

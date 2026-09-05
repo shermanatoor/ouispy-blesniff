@@ -157,7 +157,7 @@ void handle_serial_cmd(const String& raw) {
         IPAddress ip = WiFi.softAPIP();
         String apmac = WiFi.softAPmacAddress();
         Serial.printf("{\"scan_win\":%u,\"scan_int\":%u,\"ftmask\":\"0x%02x\","
-            "\"total\":%u,\"pps\":%u,\"drop_pcap\":%u,\"drop_dash\":%u,\"fw\":\"%s\","
+            "\"total\":%u,\"pps\":%u,\"drop_pcap\":%u,\"drop_dash\":%u,\"drop_ws\":%u,\"fw\":\"%s\","
             "\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"ap_mac\":\"%s\",\"ap_stations\":%u,"
             "\"session_bytes\":%u,\"session_cap\":%u,\"session_drop\":%u,"
             "\"state\":\"%s\",\"psram_free\":%u,\"heap_free\":%u}\n",
@@ -168,6 +168,7 @@ void handle_serial_cmd(const String& raw) {
             (unsigned)scan::adverts_per_sec(),
             (unsigned)scan::dropped_pcap(),
             (unsigned)scan::dropped_dash(),
+            (unsigned)web_dashboard::ws_dropped(),
             config::FW_VERSION(),
             config::get().ap_ssid, ip.toString().c_str(), apmac.c_str(),
             (unsigned)WiFi.softAPgetStationNum(),
