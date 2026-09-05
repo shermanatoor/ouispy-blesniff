@@ -843,10 +843,8 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
             '0043'],                           // registry: PARROT AUTOMOTIVE SAS
       svcs:[], names:['Parrot','Anafi','Bebop'] },
     { id:'skydio', name:'SKYDIO', color:'var(--v-skydio)',
-      ouis:['38:1d:14',                        // registry: Skydio Inc.
-            ],                       // observed (registry: Shenzhen Mercury Communication),
-      // observed; registry says Shenzhen Mercury
-      ouisBroad:['24:69:8e'],
+      ouis:['38:1d:14'],                       // registry: Skydio Inc.
+      ouisBroad:['24:69:8e'],                  // observed; registry says Shenzhen Mercury
       cids:[], svcs:[], names:['Skydio'] },
     { id:'meta',   name:'META',   color:'var(--v-meta)',
       ouis:[

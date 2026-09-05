@@ -71,3 +71,29 @@ g++ -std=c++17 -I tools/hosttest/stub -o tools/hosttest/test_text_summary tools/
 16/32/128-bit and Service-Data service UUIDs (including reduction to the short
 form, non-reduction of a genuinely custom 128-bit UUID, and de-duplication
 across encodings), and complete-vs-shortened local name precedence.
+
+# Dashboard headless-DOM test
+
+`tools/hosttest/dashboard/` runs the dashboard's actual HTML/JS in a real DOM
+(jsdom) -- extracted live from `src/dashboard_html.h` at test-run time, so it
+always exercises exactly what gets flashed, never a stale copy. WebSocket and
+`fetch` are the only stubs; everything else (vendor matching, chip filters,
+the session state machine, config load/save, CSV export) is the real code,
+driven the way a browser would: synthesized WS messages, real button clicks,
+real DOM assertions.
+
+```bash
+cd tools/hosttest/dashboard
+npm install
+node test_dashboard.js
+```
+
+34 assertions, covering (among others): the confident/broad vendor-match
+precedence and the "Confident only" toggle added for Flock detection; that a
+random address never matches an OUI while a public one does; the RESUME vs
+RECORD routing regression (`/api/session/resume`, not `/api/session/record`,
+when clicking Record from PAUSED); chip filters combining as AND across
+groups and OR within a group; the `dropped_ws` counter folding into the Drop
+stat; the scan-window warning threshold mirroring the firmware's
+`max_window_for()`; and the ftmask empty-group re-open echo (server
+normalizes, client reflects what was actually stored).

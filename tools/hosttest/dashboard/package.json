@@ -1,0 +1,12 @@
+{
+  "name": "ouispy-blesniff-dashboard-test",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Headless-DOM test of the dashboard's actual HTML/JS, extracted live from src/dashboard_html.h",
+  "scripts": {
+    "test": "node test_dashboard.js"
+  },
+  "dependencies": {
+    "jsdom": "^30.0.1"
+  }
+}
