@@ -27,6 +27,8 @@ def req(method, path, timeout=30):
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+    except Exception as e:
+        return 0, ("NO RESPONSE: %s" % e).encode()
 
 
 def status_ws():
@@ -87,6 +89,9 @@ check("stop", st_ == 200, b[:60])
 
 st_, pcap = req("GET", "/api/session.pcap", timeout=60)
 check("download", st_ == 200 and len(pcap) > 24, "status=%s bytes=%s" % (st_, len(pcap)))
+if st_ != 200:
+    print("cannot parse without a download -- is this host on the device AP?")
+    sys.exit(1)
 
 magic, vmaj, vmin, tz, sig, snap, link = struct.unpack("<IHHiIII", pcap[:24])
 check("header", magic == 0xA1B2C3D4 and link == 256, "linktype=%d" % link)
