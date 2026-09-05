@@ -31,24 +31,41 @@ def req(method, path, timeout=30):
         return 0, ("NO RESPONSE: %s" % e).encode()
 
 
+# This board is native USB-CDC (ARDUINO_USB_CDC_ON_BOOT=1), not a
+# USB-serial bridge chip. USBCDC.cpp's _onLineState() watches the DTR/RTS
+# transitions across separate port opens for a specific 4-step sequence and
+# calls usb_persist_restart() when it completes -- the same mechanism the
+# Arduino IDE uses to reset the board for upload. Opening a FRESH
+# serial.Serial() every time this test wanted a status line was, in effect,
+# a slow-motion version of that reset combo: a wrap test that opened and
+# closed the port repeatedly reset the device mid-recording, which then
+# rebooted to IDLE with the ring gone -- looking exactly like "recording
+# stops at ~64K" when the ring and reclaim logic were fine throughout.
+# One connection, opened once, kept open for the life of the script.
+_ser = None
+
+
 def status_ws():
-    """One status frame off the WebSocket would be ideal; CMD:STATUS over serial
-    is simpler. Use serial if available, else skip the cap/drop readout."""
+    """One status frame off the WebSocket would be ideal; CMD:STATUS over the
+    persistent serial connection is simpler. None if no device is attached."""
+    global _ser
+    if _ser is None:
+        try:
+            import serial, serial.tools.list_ports
+            dev = next(p.device for p in serial.tools.list_ports.comports()
+                       if "303A" in (p.hwid or "").upper())
+            _ser = serial.Serial(dev, 115200, timeout=0.2)
+            time.sleep(0.3)
+        except Exception:
+            return None
     try:
-        import serial, serial.tools.list_ports
-        dev = next(p.device for p in serial.tools.list_ports.comports()
-                   if "303A" in (p.hwid or "").upper())
-        s = serial.Serial(dev, 115200, timeout=0.2)
-        time.sleep(0.2)
-        s.reset_input_buffer()
-        s.write(b"CMD:STATUS\n"); s.flush()
+        _ser.reset_input_buffer()
+        _ser.write(b"CMD:STATUS\n"); _ser.flush()
         t_end = time.time() + 1.5
         while time.time() < t_end:
-            l = s.readline().decode("utf-8", "replace").strip()
+            l = _ser.readline().decode("utf-8", "replace").strip()
             if l.startswith("{"):
-                s.close()
                 return json.loads(l)
-        s.close()
     except Exception:
         pass
     return None
@@ -120,5 +137,7 @@ if cap:
     check("download size within cap", len(pcap) <= cap, "%d <= %d" % (len(pcap), cap))
 
 req("POST", "/api/session/record"); req("POST", "/api/session/stop")   # leave a clean STOPPED
+if _ser:
+    _ser.close()
 print("\n%s" % ("ALL PASS" if fails == 0 else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)
