@@ -17,6 +17,10 @@ constexpr uint8_t LL_SCAN_REQ        = 3;
 constexpr uint8_t LL_SCAN_RSP        = 4;
 constexpr uint8_t LL_CONNECT_IND     = 5;
 constexpr uint8_t LL_ADV_SCAN_IND    = 6;
+// Reserved PDU type used as an honest "we could not map this". Anything the
+// HCI report gives us outside 0..4 lands here rather than being relabelled as
+// ADV_IND, which would put a fabricated PDU type into the capture.
+constexpr uint8_t LL_UNKNOWN         = 0x0F;
 
 // Address type classification (refined for random subtypes).
 constexpr uint8_t ADDR_PUBLIC        = 0;
