@@ -112,6 +112,18 @@ def main():
     # restore something sane
     req("POST", "/api/config", json.dumps({"scan_win": 30, "scan_int": 100}))
 
+    # ---- filter-group normalization ------------------------------------
+    # An emptied group must come back as "no filter", not "capture nothing".
+    st, b = req("POST", "/api/config", json.dumps({"ftmask": 0x01}))      # types: ADV_IND only, addr: none
+    got = json.loads(b) if st == 200 else {}
+    check("H8b empty address group re-opened (was: captured nothing)",
+          got.get("ftmask") == 0x61, "echo ftmask=%s (want 0x61)" % got.get("ftmask"))
+    st, b = req("POST", "/api/config", json.dumps({"ftmask": 0x20}))      # addr: public only, types: none
+    got = json.loads(b) if st == 200 else {}
+    check("H8c empty type group re-opened",
+          got.get("ftmask") == 0x3F, "echo ftmask=%s (want 0x3F)" % got.get("ftmask"))
+    req("POST", "/api/config", json.dumps({"ftmask": 0x7F}))
+
     # ---- AP validation ---------------------------------------------------
     st, b = req("POST", "/api/ap", json.dumps({"ssid": "test-ap", "pass": "short"}))
     check("H9 short AP password rejected (was: 200 + reboot)",
