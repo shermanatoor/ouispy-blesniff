@@ -234,10 +234,16 @@ uint32_t adverts_per_sec() {
     // loop(). Only the caller that wins the compare-exchange rolls the window,
     // so a second caller can no longer zero a window it did not open (which
     // made the dashboard read 0 pps whenever a script polled CMD:STATUS).
-    if (now - last >= 1000 &&
+    const uint32_t elapsed = now - last;
+    if (elapsed >= 1000 &&
         g_last_pps_ms.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
-        g_per_sec.store(g_this_sec.exchange(0, std::memory_order_relaxed),
-                        std::memory_order_relaxed);
+        // Divide by the window that actually elapsed, not by an assumed one
+        // second. Nothing guarantees this is polled at 1 Hz -- with no
+        // dashboard client connected the first CMD:STATUS after a quiet spell
+        // reported a whole minute of adverts as one second (observed: 2619
+        // pps against a true rate of ~45).
+        const uint64_t count = g_this_sec.exchange(0, std::memory_order_relaxed);
+        g_per_sec.store((uint32_t)(count * 1000u / elapsed), std::memory_order_relaxed);
     }
     return g_per_sec.load(std::memory_order_relaxed);
 }

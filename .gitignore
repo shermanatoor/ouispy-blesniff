@@ -8,4 +8,4 @@
 __pycache__/
 build/
 firmware/build/
-.ids-cache/
+tools/hwtest/crash_probe.log
