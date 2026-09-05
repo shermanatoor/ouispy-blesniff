@@ -42,9 +42,10 @@ registry entries assigned to a vendor that the tables do not carry yet.
 Entries are one of two kinds. **Registry** entries are assigned to the vendor
 in the registries and the validator fails the build if one goes stale.
 **Observed** entries come from field research on the vendor's hardware
-(Detector OUI Database) and typically belong to the radio-module maker --
-Espressif, Telink -- so they match other devices using the same module. The
-validator reports these as `obs` and never fails them; do not prune them.
+([colonelpanichacks/ouispy-detector](https://github.com/colonelpanichacks/ouispy-detector)'s
+OUI database) and typically belong to the radio-module maker -- Espressif,
+Telink -- so they match other devices using the same module. The validator
+reports these as `obs` and never fails them; do not prune them.
 
 ## Confidence tiers
 

@@ -8,7 +8,7 @@ namespace config {
 namespace {
 
 constexpr const char* NS      = "blesniff";
-constexpr const char* VERSION = "1.0.0";
+constexpr const char* VERSION = "1.1.0";
 
 Preferences prefs;
 Config      cfg;

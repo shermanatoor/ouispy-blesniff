@@ -108,9 +108,9 @@ uint16_t manufacturer_id(const scan::Frame& f) {
 // Bluetooth SIG company identifiers, checked by tools/validate_ids.py. Four
 // consumer entries were mislabelled (0x00D2 is Renesas not Sonos, 0x008A
 // Jawbone not Bose, 0x2C00 unassigned, 0x0002 Intel not Nokia) and are fixed.
-// 0x0BF3 and 0x004D are field observations from the Detector OUI Database
-// (registry says PONE Biometrics / Staccato); kept, with the registry CIDs
-// for DJI and Parrot added alongside.
+// 0x0BF3 and 0x004D are field observations from colonelpanichacks/ouispy-detector's
+// OUI database (registry says PONE Biometrics / Staccato); kept, with the
+// registry CIDs for DJI and Parrot added alongside.
 const char* mfr_shortname(uint16_t id) {
     switch (id) {
         // Big consumer
