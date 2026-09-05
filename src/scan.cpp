@@ -60,7 +60,15 @@ inline size_t frame_bytes(const Frame& f) {
 
 void ring_push(Ring& r, const Frame& f) {
     const size_t n = frame_bytes(f);
-    portENTER_CRITICAL_ISR(&r.mux);
+    // Task-context variant, matching ring_pop()/clear_ring() below -- onResult()
+    // runs on the NimBLE host task, not an ISR. The _ISR variant only takes the
+    // spinlock and leaves interrupts enabled, so a preemption here could hand
+    // the core to a task that then blocks on the same mux via portENTER_CRITICAL
+    // (which does mask interrupts): that task spins forever since the holder it
+    // is waiting on cannot run again until this core services an interrupt --
+    // and interrupts are exactly what it just disabled. Same spinlock, one
+    // variant, both sides.
+    portENTER_CRITICAL(&r.mux);
     size_t next_head = ring_next(r, r.head);
     if (next_head == r.tail) {
         r.tail = ring_next(r, r.tail);
@@ -68,7 +76,7 @@ void ring_push(Ring& r, const Frame& f) {
     }
     memcpy(&r.slots[r.head], &f, n);
     r.head = next_head;
-    portEXIT_CRITICAL_ISR(&r.mux);
+    portEXIT_CRITICAL(&r.mux);
 }
 
 bool ring_pop(Ring& r, Frame* out) {

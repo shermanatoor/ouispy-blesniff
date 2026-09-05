@@ -416,7 +416,7 @@ bool init() {
     boot_ms = millis();
 
     server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
-        AsyncWebServerResponse* r = req->beginResponse_P(200, "text/html", (const uint8_t*)INDEX_HTML, strlen_P(INDEX_HTML));
+        AsyncWebServerResponse* r = req->beginResponse(200, "text/html", (const uint8_t*)INDEX_HTML, strlen_P(INDEX_HTML));
         r->addHeader("Cache-Control", "no-store");
         req->send(r);
     });
