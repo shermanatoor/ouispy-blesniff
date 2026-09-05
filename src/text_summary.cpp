@@ -93,8 +93,8 @@ void extract_name(const scan::Frame& f, char* out, size_t out_sz) {
     });
 }
 
-uint16_t manufacturer_id(const scan::Frame& f) {
-    uint16_t id = 0xFFFF;
+int32_t manufacturer_id(const scan::Frame& f) {
+    int32_t id = -1;
     for_each_ad(f, [&](uint8_t type, const uint8_t* d, uint8_t dlen) -> bool {
         if (type == ad::MANUFACTURER_SPECIFIC && dlen >= 2) {
             id = (uint16_t)d[0] | ((uint16_t)d[1] << 8);
@@ -255,7 +255,7 @@ size_t format_line(const scan::Frame& f, char* out, size_t out_sz) {
     extract_name(f, name, sizeof(name));
     char svc[80]; svc[0] = 0;
     extract_service_uuids(f, svc, sizeof(svc));
-    uint16_t mfr = manufacturer_id(f);
+    int32_t mfr = manufacturer_id(f);
 
     // Channel: firmware doesn't get per-advert channel; print 0xFF as "?"
     char chbuf[4];
@@ -284,8 +284,9 @@ size_t format_line(const scan::Frame& f, char* out, size_t out_sz) {
     if (svc[0] && off + 1 < out_sz) {
         append(snprintf(out + off, out_sz - off, " svc=%s", svc));
     }
-    if (mfr != 0xFFFF && off + 1 < out_sz) {
-        append(snprintf(out + off, out_sz - off, " mfr=%04X(%s)", mfr, mfr_shortname(mfr)));
+    if (mfr >= 0 && off + 1 < out_sz) {
+        append(snprintf(out + off, out_sz - off, " mfr=%04X(%s)",
+                        (unsigned)mfr, mfr_shortname((uint16_t)mfr)));
     }
     if (off + 1 < out_sz) {
         out[off++] = '\n';

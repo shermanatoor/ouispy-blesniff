@@ -2,16 +2,31 @@
 
 #include <Preferences.h>
 #include <string.h>
+#include <freertos/FreeRTOS.h>
 
 namespace config {
 
 namespace {
 
 constexpr const char* NS      = "blesniff";
-constexpr const char* VERSION = "1.1.0";
+constexpr const char* VERSION = "1.1.1";
 
 Preferences prefs;
 Config      cfg;
+
+// cfg is read from the NimBLE host task (scan.cpp's onResult callback), the
+// AsyncTCP task (HTTP handlers in web_dashboard.cpp), and the Arduino loop
+// task (serial CMD:* handlers) -- three independent FreeRTOS tasks with no
+// prior synchronization. This spinlock guards every in-memory read/write of
+// cfg; it never wraps the blocking Preferences/NVS flash I/O in save()/load().
+portMUX_TYPE g_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// The last window value a caller explicitly asked for, before clamp() capped
+// it against the interval in effect at the time. set_scan_interval() re-derives
+// the stored window from this on every interval change, so a WINDOW command
+// that got capped for coexistence is retried against a later, less
+// restrictive interval instead of being silently stuck at the old cap.
+uint16_t g_last_req_window = 0;
 
 void apply_defaults() {
     // Leave ~70% of the 2.4 GHz radio for WiFi coexistence so the AP stays
@@ -46,9 +61,19 @@ void clamp() {
 
 const char* FW_VERSION() { return VERSION; }
 
-Config& get() { return cfg; }
+// Returns a snapshot copy rather than a reference to the live global: cfg is
+// shared across three tasks (see g_cfg_mux above), so callers reading several
+// fields off one get() -- e.g. `const auto& c = config::get();` -- get a
+// consistent point-in-time view instead of racing a concurrent writer.
+Config get() {
+    portENTER_CRITICAL(&g_cfg_mux);
+    Config c = cfg;
+    portEXIT_CRITICAL(&g_cfg_mux);
+    return c;
+}
 
 void load() {
+    // Boot-time only, before any other task exists -- no lock needed here.
     apply_defaults();
     prefs.begin(NS, true);
     cfg.scan_window_ms   = prefs.getUShort("scan_win", cfg.scan_window_ms);
@@ -58,40 +83,81 @@ void load() {
     prefs.getString("ap_pass", cfg.ap_pass, sizeof(cfg.ap_pass));
     prefs.end();
     clamp();
+    g_last_req_window = cfg.scan_window_ms;
 }
 
 void save() {
+    // clamp() and the snapshot run under the lock (fast, no I/O); the flash
+    // write below does not -- portENTER_CRITICAL masks interrupts, and NVS
+    // I/O can block/take a semaphore internally, which must never happen
+    // with interrupts off.
+    Config snapshot;
+    portENTER_CRITICAL(&g_cfg_mux);
     clamp();
+    snapshot = cfg;
+    portEXIT_CRITICAL(&g_cfg_mux);
+
     prefs.begin(NS, false);
-    prefs.putUShort("scan_win", cfg.scan_window_ms);
-    prefs.putUShort("scan_int", cfg.scan_interval_ms);
-    prefs.putUChar ("ftmask",   cfg.ft_mask);
-    prefs.putString("ap_ssid",  cfg.ap_ssid);
-    prefs.putString("ap_pass",  cfg.ap_pass);
+    prefs.putUShort("scan_win", snapshot.scan_window_ms);
+    prefs.putUShort("scan_int", snapshot.scan_interval_ms);
+    prefs.putUChar ("ftmask",   snapshot.ft_mask);
+    prefs.putString("ap_ssid",  snapshot.ap_ssid);
+    prefs.putString("ap_pass",  snapshot.ap_pass);
     prefs.end();
 }
 
 void reset_defaults() {
+    portENTER_CRITICAL(&g_cfg_mux);
     apply_defaults();
+    g_last_req_window = cfg.scan_window_ms;
+    portEXIT_CRITICAL(&g_cfg_mux);
     save();
 }
 
-void set_scan_window(uint16_t ms)   { cfg.scan_window_ms = ms;   save(); }
-void set_scan_interval(uint16_t ms) { cfg.scan_interval_ms = ms; save(); }
-void set_ftmask(uint8_t m)          { cfg.ft_mask = m; save(); }   // save() normalizes
+void set_scan_window(uint16_t ms) {
+    portENTER_CRITICAL(&g_cfg_mux);
+    g_last_req_window  = ms;
+    cfg.scan_window_ms = ms;
+    portEXIT_CRITICAL(&g_cfg_mux);
+    save();
+}
+
+void set_scan_interval(uint16_t ms) {
+    portENTER_CRITICAL(&g_cfg_mux);
+    cfg.scan_interval_ms = ms;
+    // Re-derive window from the last explicitly requested value, not the
+    // already-clamped stored one -- so WINDOW 150 (capped to 50 under
+    // interval=100) followed by INTERVAL 400 restores 150 (now legal under
+    // the new interval) instead of leaving window stuck at 50.
+    cfg.scan_window_ms = g_last_req_window;
+    portEXIT_CRITICAL(&g_cfg_mux);
+    save();
+}
+
+void set_ftmask(uint8_t m) {
+    portENTER_CRITICAL(&g_cfg_mux);
+    cfg.ft_mask = m;
+    portEXIT_CRITICAL(&g_cfg_mux);
+    save();   // save() normalizes
+}
 
 void set_scan_params(uint16_t window_ms, uint16_t interval_ms) {
+    portENTER_CRITICAL(&g_cfg_mux);
+    g_last_req_window    = window_ms;
     cfg.scan_window_ms   = window_ms;
     cfg.scan_interval_ms = interval_ms;
+    portEXIT_CRITICAL(&g_cfg_mux);
     save();   // clamp() inside save() now sees both new values together
 }
 
 void set_ap(const char* ssid, const char* pass) {
+    portENTER_CRITICAL(&g_cfg_mux);
     if (ssid && *ssid) strlcpy(cfg.ap_ssid, ssid, sizeof(cfg.ap_ssid));
     if (pass) {
         size_t l = strlen(pass);
         if (l >= 8 && l <= 63) strlcpy(cfg.ap_pass, pass, sizeof(cfg.ap_pass));
     }
+    portEXIT_CRITICAL(&g_cfg_mux);
     save();
 }
 
