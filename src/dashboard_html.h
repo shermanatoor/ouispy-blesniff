@@ -772,31 +772,68 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   // Match on any of: MAC OUI, Bluetooth SIG company ID (in mfr data),
   // 16-bit service UUID, or a case-insensitive substring of the local name.
   // BLE MACs randomize often -- CID / UUID / name are the reliable signals.
+  // Two kinds of identifier per vendor, kept apart on purpose:
+  //   registry -- assigned to the vendor in the IEEE MA-L / Bluetooth SIG
+  //               registries (tools/validate_ids.py checks these)
+  //   observed -- seen on the vendor's hardware in the field (Detector OUI
+  //               Database research). Many belong to the radio-module maker
+  //               (Espressif, Telink...) rather than the vendor, so they also
+  //               match unrelated devices using the same module. Kept because
+  //               they catch units the registry entries miss.
+  // Add to either; do not prune "observed" entries for failing the registry.
   const VENDORS = [
     { id:'ring',   name:'RING',   color:'var(--v-ring)',
-      ouis:['00:0d:c5','14:cc:20','a4:77:33','b0:09:da','7c:8c:6c'],
-      cids:['0171'],  // Amazon (Ring is Amazon-owned)
+      ouis:[
+        // observed
+        '00:0d:c5','14:cc:20','a4:77:33','7c:8c:6c',
+        // registry: Ring Solutions, Ring LLC x13
+        'b0:09:da','00:b4:63','18:7f:88','24:2b:d6','34:3e:a4','50:e4:67','54:e0:19',
+        '5c:47:5e','64:9a:63','90:48:6c','9c:76:13','ac:9f:c3','c4:db:ad','cc:3b:fb'],
+      cids:['0171'],  // registry: Amazon.com Services LLC (Ring is Amazon; also matches Echo etc.)
       svcs:[], names:['Ring'] },
     { id:'axon',   name:'AXON',   color:'var(--v-axon)',
-      ouis:['00:25:df'],
-      cids:['034d'],  // TASER International
-      svcs:['fc81'], names:[] },
+      ouis:['00:25:df'],                       // registry: Axon Enterprise, Inc.
+      cids:['034d'],                           // registry: TASER International, Inc.
+      svcs:['fc81','fe6b','fe6c'],             // registry: Axon Enterprise; TASER International x2
+      names:[] },
     { id:'flock',  name:'FLOCK',  color:'var(--v-flock)',
-      ouis:['a4:cf:12','24:6f:28','3c:71:bf','48:e7:29','98:cd:ac'],
+      ouis:[
+        // observed on Flock cameras -- these are Espressif OUIs (ESP32 radio
+        // module), so any ESP32 device in range matches too
+        'a4:cf:12','24:6f:28','3c:71:bf','48:e7:29','98:cd:ac',
+        // registry: Flock Safety
+        'b4:1e:52'],
       cids:[], svcs:[], names:['Flock','Falcon','Raven'] },
     { id:'dji',    name:'DJI',    color:'var(--v-dji)',
-      ouis:['0c:9a:e6','8c:58:23','04:a8:5a','58:b8:58','e4:7a:2c','60:60:1f','48:1c:b9','34:d2:62'],
-      cids:['0bf3'], svcs:[], names:['DJI','Mavic','Phantom','Inspire'] },
+      ouis:[
+        // registry: SZ DJI Technology x10, DJI Baiwang x3, DJI Osmo, SZ DJI Ronin
+        '0c:9a:e6','8c:58:23','04:a8:5a','58:b8:58','e4:7a:2c','60:60:1f','48:1c:b9','34:d2:62',
+        '4c:43:f6','88:29:85','34:91:f0','9c:5a:8a','ec:72:f7','20:1f:55','f8:40:68'],
+      cids:['0bf3',                            // observed (registry: PONE Biometrics AS)
+            '08aa'],                           // registry: SZ DJI TECHNOLOGY CO.,LTD
+      svcs:[], names:['DJI','Mavic','Phantom','Inspire'] },
     { id:'parrot', name:'PARROT', color:'var(--v-parrot)',
-      ouis:['00:12:1c','00:26:7e','90:03:b7','90:3a:e6','a0:14:3d'],
-      cids:['004d'], svcs:[], names:['Parrot','Anafi','Bebop'] },
+      ouis:['00:12:1c','00:26:7e','90:03:b7','90:3a:e6','a0:14:3d'],   // registry: PARROT SA (complete)
+      cids:['004d',                            // observed (registry: Staccato Communications)
+            '0043'],                           // registry: PARROT AUTOMOTIVE SAS
+      svcs:[], names:['Parrot','Anafi','Bebop'] },
     { id:'skydio', name:'SKYDIO', color:'var(--v-skydio)',
-      ouis:['38:1d:14','24:69:8e'],
+      ouis:['38:1d:14',                        // registry: Skydio Inc.
+            '24:69:8e'],                       // observed (registry: Shenzhen Mercury Communication)
       cids:[], svcs:[], names:['Skydio'] },
     { id:'meta',   name:'META',   color:'var(--v-meta)',
-      ouis:['7c:2a:9e','cc:66:0a','f4:03:43','5c:e9:1e','98:59:49','80:aa:1c','38:47:12','a4:c1:38','58:d5:6e','2c:41:a1','44:d9:e7','9c:d9:17'],
-      cids:['0d53'],  // Luxottica (frame-side)
-      svcs:['fd5f'], names:['Ray-Ban','Wayfarer','Oakley Meta'] },
+      ouis:[
+        // observed on Ray-Ban Meta / Quest hardware
+        '7c:2a:9e','cc:66:0a','f4:03:43','5c:e9:1e','a4:c1:38','58:d5:6e','2c:41:a1','44:d9:e7','9c:d9:17',
+        // registry: Luxottica x3, Essilor
+        '98:59:49','80:aa:1c','38:47:12','00:1a:12',
+        // registry: Meta Platforms x13, Facebook x2, Oculus VR
+        '48:05:60','50:99:03','78:c4:fa','80:f3:ef','84:57:f7','88:25:08','94:f9:29',
+        'b4:17:a8','c0:dd:8a','cc:a1:74','d0:b3:c2','d4:d6:59','f4:4e:35',
+        '48:57:dd','a4:0e:2b','2c:26:17'],
+      cids:['0d53','01ab','058e'],             // registry: Luxottica; Meta Platforms; Meta Platforms Technologies
+      svcs:['fd5f','feb7','feb8'],             // registry: Meta Platforms Technologies; Meta Platforms x2 (Quest advertises FEB8)
+      names:['Ray-Ban','Wayfarer','Oakley Meta','Quest'] },
   ];
   const vendorEnabled = new Set(VENDORS.map(v => v.id));
   const vendorHitCounts = {};

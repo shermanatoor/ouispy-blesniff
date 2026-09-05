@@ -30,3 +30,18 @@ window/interval clamping (including the Wi-Fi coexistence cap), AP credential
 validation, the Record/Pause/Resume/Stop state machine, a PCAP download that
 is parsed record by record, and finally `/api/reboot` with the serial port
 held open to confirm the reply arrives and the boot banner is contiguous.
+
+# Vendor identifier validation
+
+`tools/validate_ids.py` cross-checks every OUI, Bluetooth SIG company ID and
+16-bit service UUID in the dashboard `VENDORS` table and `mfr_shortname()`
+against the live IEEE MA-L and Bluetooth SIG registries (cached in
+`.ids-cache/`). Run it before editing either table; `--search` also lists
+registry entries assigned to a vendor that the tables do not carry yet.
+
+Entries are one of two kinds. **Registry** entries are assigned to the vendor
+in the registries and the validator fails the build if one goes stale.
+**Observed** entries come from field research on the vendor's hardware
+(Detector OUI Database) and typically belong to the radio-module maker --
+Espressif, Telink -- so they match other devices using the same module. The
+validator reports these as `obs` and never fails them; do not prune them.

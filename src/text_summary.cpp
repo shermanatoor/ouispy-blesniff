@@ -100,6 +100,12 @@ uint16_t manufacturer_id(const scan::Frame& f) {
     return id;
 }
 
+// Bluetooth SIG company identifiers, checked by tools/validate_ids.py. Four
+// consumer entries were mislabelled (0x00D2 is Renesas not Sonos, 0x008A
+// Jawbone not Bose, 0x2C00 unassigned, 0x0002 Intel not Nokia) and are fixed.
+// 0x0BF3 and 0x004D are field observations from the Detector OUI Database
+// (registry says PONE Biometrics / Staccato); kept, with the registry CIDs
+// for DJI and Parrot added alongside.
 const char* mfr_shortname(uint16_t id) {
     switch (id) {
         // Big consumer
@@ -110,22 +116,26 @@ const char* mfr_shortname(uint16_t id) {
         case 0x0171: return "Amazon";
         case 0x038F: return "Xiaomi";
         case 0x0087: return "Garmin";
-        case 0x00D2: return "Sonos";
-        case 0x008A: return "Bose";
-        case 0x2C00: return "GoPro";
+        case 0x05A7: return "Sonos";
+        case 0x009E: return "Bose";
+        case 0x02F2: return "GoPro";
         // Silicon / dev
         case 0x0059: return "Nordic";
         case 0x0131: return "Cypress";
         case 0x02E5: return "Espressif";
         case 0x000F: return "Broadcom";
-        case 0x0002: return "Nokia";
+        case 0x0001: return "Nokia";
         case 0x0157: return "Anhui Huami";
         case 0x0499: return "Ruuvi";
-        // Surveillance / drones / smartglasses (from Detector OUI Database)
+        // Surveillance / drones / smartglasses
         case 0x034D: return "Axon/TASER";
+        case 0x01AB: return "Meta";
+        case 0x058E: return "Meta (Reality Labs)";
         case 0x0D53: return "Luxottica (Meta/Ray-Ban)";
-        case 0x0BF3: return "DJI";
-        case 0x004D: return "Parrot";
+        case 0x08AA: return "DJI";
+        case 0x0BF3: return "DJI (observed)";
+        case 0x0043: return "Parrot Automotive";
+        case 0x004D: return "Parrot (observed)";
         default:     return "?";
     }
 }
