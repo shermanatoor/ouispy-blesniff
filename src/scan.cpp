@@ -7,6 +7,8 @@
 #include <freertos/task.h>
 #include <sys/time.h>
 
+#include <atomic>
+
 namespace scan {
 
 namespace {
@@ -23,11 +25,14 @@ struct Ring {
 Ring ring_pcap = { nullptr, 0, 0, 0, 0, portMUX_INITIALIZER_UNLOCKED };
 Ring ring_dash = { nullptr, 0, 0, 0, 0, portMUX_INITIALIZER_UNLOCKED };
 
-volatile uint32_t g_total          = 0;
-volatile uint32_t g_this_sec       = 0;
-volatile uint32_t g_per_sec        = 0;
-volatile uint32_t g_last_pps_ms    = 0;
-volatile uint32_t g_frame_idx      = 0;
+// Written by the NimBLE callback task, read (and for the pps window, reset)
+// from the dashboard task and from loop() via CMD:STATUS. Atomics rather than
+// volatile: a plain read-modify-write across those tasks loses increments.
+std::atomic<uint32_t> g_total       {0};
+std::atomic<uint32_t> g_this_sec    {0};
+std::atomic<uint32_t> g_per_sec     {0};
+std::atomic<uint32_t> g_last_pps_ms {0};
+std::atomic<uint32_t> g_frame_idx   {0};
 
 bool ring_alloc(Ring& r, size_t slot_count, bool prefer_psram) {
     r.capacity = slot_count;
@@ -77,7 +82,10 @@ uint8_t map_hci_advtype_to_ll(uint8_t hci) {
         case 2: return LL_ADV_SCAN_IND;    // BLE_HCI_ADV_TYPE_ADV_SCAN_IND
         case 3: return LL_ADV_NONCONN_IND; // BLE_HCI_ADV_TYPE_ADV_NONCONN_IND
         case 4: return LL_SCAN_RSP;        // BLE_HCI_ADV_TYPE_SCAN_RSP
-        default: return LL_ADV_IND;
+        // Anything else (an extended-advertising event type, say) is not a
+        // legacy PDU we can name. Report it as unknown -- the old default of
+        // LL_ADV_IND wrote a PDU type into the PCAP that was never on air.
+        default: return LL_UNKNOWN;
     }
 }
 
@@ -138,7 +146,7 @@ class Cb : public NimBLEAdvertisedDeviceCallbacks {
         }
 
         Frame f;
-        f.idx  = ++g_frame_idx;
+        f.idx  = g_frame_idx.fetch_add(1, std::memory_order_relaxed) + 1;
         struct timeval tv;
         gettimeofday(&tv, nullptr);
         f.ts_sec  = (uint32_t)tv.tv_sec;
@@ -158,8 +166,8 @@ class Cb : public NimBLEAdvertisedDeviceCallbacks {
         ring_push(ring_pcap, f);
         ring_push(ring_dash, f);
 
-        g_total++;
-        g_this_sec++;
+        g_total.fetch_add(1, std::memory_order_relaxed);
+        g_this_sec.fetch_add(1, std::memory_order_relaxed);
     }
 };
 
@@ -198,18 +206,23 @@ void apply_scan_params() {
 bool pop_pcap(Frame* out)      { return ring_pop(ring_pcap, out); }
 bool pop_dashboard(Frame* out) { return ring_pop(ring_dash, out); }
 
-uint32_t total_adverts() { return g_total; }
+uint32_t total_adverts() { return g_total.load(std::memory_order_relaxed); }
 uint32_t dropped_pcap()  { return ring_pcap.dropped; }
 uint32_t dropped_dash()  { return ring_dash.dropped; }
 
 uint32_t adverts_per_sec() {
-    uint32_t now = millis();
-    if (now - g_last_pps_ms >= 1000) {
-        g_per_sec = g_this_sec;
-        g_this_sec = 0;
-        g_last_pps_ms = now;
+    const uint32_t now  = millis();
+    uint32_t       last = g_last_pps_ms.load(std::memory_order_relaxed);
+    // Two tasks poll this: the dashboard status tick and CMD:STATUS from
+    // loop(). Only the caller that wins the compare-exchange rolls the window,
+    // so a second caller can no longer zero a window it did not open (which
+    // made the dashboard read 0 pps whenever a script polled CMD:STATUS).
+    if (now - last >= 1000 &&
+        g_last_pps_ms.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+        g_per_sec.store(g_this_sec.exchange(0, std::memory_order_relaxed),
+                        std::memory_order_relaxed);
     }
-    return g_per_sec;
+    return g_per_sec.load(std::memory_order_relaxed);
 }
 
 void clear_ring() {

@@ -33,6 +33,7 @@ const char* ll_type_name(uint8_t t) {
         case scan::LL_SCAN_RSP:        return "SCAN_RSP";
         case scan::LL_CONNECT_IND:     return "CONNECT_REQ";
         case scan::LL_ADV_SCAN_IND:    return "ADV_SCAN";
+        // scan::LL_UNKNOWN lands here, as does any value we never emit.
         default:                       return "ADV_?";
     }
 }
@@ -183,28 +184,34 @@ size_t format_line(const scan::Frame& f, char* out, size_t out_sz) {
     if (f.channel <= 39) snprintf(chbuf, sizeof(chbuf), "%u", f.channel);
     else                 strlcpy(chbuf, "?", sizeof(chbuf));
 
-    size_t off = snprintf(out, out_sz, "[Ch%s RSSI%ddBm] %s %s:%s",
-                          chbuf, (int)f.rssi,
-                          ll_type_name(f.ll_pdu_type),
-                          addr_type_short(f.addr_type),
-                          addr);
-    if (off >= out_sz) return out_sz - 1;
+    // snprintf returns the length it *would* have written, so every append has
+    // to be clamped back to the buffer. The returned length is handed straight
+    // to Serial.write(), and an unclamped offset would read past `out`.
+    size_t off = 0;
+    auto append = [&](int n) {
+        if (n <= 0) return;
+        off += (size_t)n;
+        if (off >= out_sz) off = out_sz - 1;   // truncated; NUL already at out_sz-1
+    };
 
-    if (name[0]) {
-        int n = snprintf(out + off, out_sz - off, " name=\"%s\"", name);
-        if (n > 0) off += (size_t)n;
+    append(snprintf(out, out_sz, "[Ch%s RSSI%ddBm] %s %s:%s",
+                    chbuf, (int)f.rssi,
+                    ll_type_name(f.ll_pdu_type),
+                    addr_type_short(f.addr_type),
+                    addr));
+
+    if (name[0] && off + 1 < out_sz) {
+        append(snprintf(out + off, out_sz - off, " name=\"%s\"", name));
     }
-    if (svc[0] && off < out_sz) {
-        int n = snprintf(out + off, out_sz - off, " svc=%s", svc);
-        if (n > 0) off += (size_t)n;
+    if (svc[0] && off + 1 < out_sz) {
+        append(snprintf(out + off, out_sz - off, " svc=%s", svc));
     }
-    if (mfr != 0xFFFF && off < out_sz) {
-        int n = snprintf(out + off, out_sz - off, " mfr=%04X(%s)", mfr, mfr_shortname(mfr));
-        if (n > 0) off += (size_t)n;
+    if (mfr != 0xFFFF && off + 1 < out_sz) {
+        append(snprintf(out + off, out_sz - off, " mfr=%04X(%s)", mfr, mfr_shortname(mfr)));
     }
-    if (off < out_sz) {
+    if (off + 1 < out_sz) {
         out[off++] = '\n';
-        if (off < out_sz) out[off] = 0;
+        out[off] = 0;
     }
     return off;
 }

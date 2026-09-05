@@ -28,8 +28,10 @@ void clamp() {
     if (cfg.scan_window_ms > 2000)             cfg.scan_window_ms = 2000;
     if (cfg.scan_interval_ms < 20)             cfg.scan_interval_ms = 20;
     if (cfg.scan_interval_ms > 4000)           cfg.scan_interval_ms = 4000;
-    if (cfg.scan_window_ms > cfg.scan_interval_ms)
-        cfg.scan_window_ms = cfg.scan_interval_ms;
+    // NOT `window = interval`: that is exactly the coexistence state that
+    // starves SoftAP beacons and locks the dashboard out. Cap at half.
+    const uint16_t maxw = max_window_for(cfg.scan_interval_ms);
+    if (cfg.scan_window_ms > maxw) cfg.scan_window_ms = maxw;
     if (cfg.ft_mask == 0)                      cfg.ft_mask = FT_DEFAULT;
     if (strlen(cfg.ap_ssid) == 0)              strlcpy(cfg.ap_ssid, "ouispy-blesniff", sizeof(cfg.ap_ssid));
     size_t pl = strlen(cfg.ap_pass);
@@ -73,6 +75,12 @@ void reset_defaults() {
 void set_scan_window(uint16_t ms)   { cfg.scan_window_ms = ms;   save(); }
 void set_scan_interval(uint16_t ms) { cfg.scan_interval_ms = ms; save(); }
 void set_ftmask(uint8_t m)          { cfg.ft_mask = m ? m : FT_DEFAULT; save(); }
+
+void set_scan_params(uint16_t window_ms, uint16_t interval_ms) {
+    cfg.scan_window_ms   = window_ms;
+    cfg.scan_interval_ms = interval_ms;
+    save();   // clamp() inside save() now sees both new values together
+}
 
 void set_ap(const char* ssid, const char* pass) {
     if (ssid && *ssid) strlcpy(cfg.ap_ssid, ssid, sizeof(cfg.ap_ssid));

@@ -79,7 +79,10 @@ void led_task(void*) {
         uint32_t pkt_ms = last_advert_ms;
         if (pkt_ms != last_pkt_seen) {
             last_pkt_seen = pkt_ms;
-            if (now - amber_until > 60) amber_until = now + 20;
+            // The old rate-limit here compared unsigned millis against a future
+            // deadline, so it underflowed and was always true. Same behaviour,
+            // without pretending to gate anything.
+            amber_until = now + 20;
         }
         if (now < amber_until) {
             r = 30; g = 20; b = 0;
@@ -129,8 +132,19 @@ void print_banner() {
 
 String upper(const String& s) { String o = s; o.toUpperCase(); return o; }
 
-void reply_ok()               { Serial.println(F("OK")); }
-void reply_err(const char* m) { Serial.print(F("ERR ")); Serial.println(m); }
+// One write() per reply. HWCDC takes its tx mutex per write, so a single call
+// is atomic against pcap_writer_task's advert lines -- but print() followed by
+// println() is two calls, and an advert line could land in the gap and split
+// the reply that scripts parse.
+void reply_ok() { Serial.write("OK\n", 3); }
+
+void reply_err(const char* m) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "ERR %s\n", m);
+    if (n <= 0) return;
+    if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
+    Serial.write(buf, (size_t)n);
+}
 
 void handle_serial_cmd(const String& raw) {
     String line = raw; line.trim();
@@ -180,7 +194,17 @@ void handle_serial_cmd(const String& raw) {
         if (v < 10 || v > 2000) { reply_err("bad window"); return; }
         config::set_scan_window((uint16_t)v);
         scan::apply_scan_params();
-        reply_ok(); return;
+        // The window is capped at half the interval for Wi-Fi coexistence, so
+        // say what was stored rather than a bare OK that hides the clamp.
+        if (config::get().scan_window_ms != (uint16_t)v) {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "OK window=%u (capped for AP coexistence)\n",
+                             (unsigned)config::get().scan_window_ms);
+            if (n > 0) Serial.write(buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
+        } else {
+            reply_ok();
+        }
+        return;
     }
     if (U.startsWith("INTERVAL ")) {
         int v = U.substring(9).toInt();
@@ -262,14 +286,17 @@ void setup() {
     // pcap_stream no longer needs init -- USB output is text-only, session
     // buffer for the dashboard is initialized separately.
 
+    if (g_fault == Fault::None) buzzer_chirp(1500, 40);
+
+    // Print the banner before pcap_writer_task exists. scan::init() has already
+    // started filling the ring, so starting the writer first let advert lines
+    // interleave with the multi-println banner.
+    print_banner();
+
     // pcap_writer_task copies scan::Frame (~280B) into a stack local per pop;
     // 8KB is comfortable headroom.
     xTaskCreatePinnedToCore(&pcap_writer_task, "pcap_wr", 8192, nullptr, 5, &pcap_task_h, 0);
     xTaskCreatePinnedToCore(&led_task,         "led",     2048, nullptr, 1, &led_task_h,  0);
-
-    if (g_fault == Fault::None) buzzer_chirp(1500, 40);
-
-    print_banner();
 }
 
 void loop() {
