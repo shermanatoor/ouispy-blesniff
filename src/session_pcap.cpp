@@ -25,16 +25,48 @@ struct __attribute__((packed)) PcapRec {
 
 // Tiered PSRAM allocation. First entry that succeeds wins; nothing falls
 // through to DRAM (that path OOM-crashed the ESP32 previously).
+#ifdef OUISPY_SESSION_CAP
+// Test knob: a single small tier so the ring wraps in seconds instead of the
+// ~40 minutes 6 MB takes at typical advert rates. tools/hwtest/wrap_test.py
+// builds with PLATFORMIO_BUILD_FLAGS=-DOUISPY_SESSION_CAP=65536.
+constexpr size_t CAP_TIERS[] = { OUISPY_SESSION_CAP };
+#else
 constexpr size_t CAP_TIERS[] = { 6 * 1024 * 1024, 4 * 1024 * 1024, 2 * 1024 * 1024 };
+#endif
 
-uint8_t*             g_buf     = nullptr;
-size_t               g_cap     = 0;
-size_t               g_used    = 0;
+uint8_t*             g_buf     = nullptr;   // [0,GLOBAL_HDR_LEN) header, then the data ring
+size_t               g_cap     = 0;         // whole allocation
+size_t               g_dcap    = 0;         // data ring capacity = g_cap - GLOBAL_HDR_LEN
+size_t               g_head    = 0;         // physical offset (in the data ring) of the oldest record
+size_t               g_data    = 0;         // bytes of records currently held
 uint32_t             g_dropped = 0;
 SemaphoreHandle_t    g_lock    = nullptr;
 
 volatile State       g_state          = State::IDLE;
 volatile uint32_t    g_downloads      = 0;
+
+// The data region is a circular buffer of PCAP records. Logical position L
+// (0 = oldest byte) lives at physical g_head + L, wrapping at g_dcap. Records
+// may straddle the wrap; the two helpers below split the copy. This replaced
+// a linear buffer that reclaimed space by memmove()ing up to 3 MB of PSRAM
+// under the lock -- a 100 ms+ stall of the writer every time the ring filled.
+inline uint8_t* dring() { return g_buf + GLOBAL_HDR_LEN; }
+
+void ring_write_locked(size_t logical, const void* src, size_t n) {
+    size_t p = g_head + logical;
+    if (p >= g_dcap) p -= g_dcap;
+    const size_t first = (n < g_dcap - p) ? n : g_dcap - p;
+    memcpy(dring() + p, src, first);
+    if (n > first) memcpy(dring(), (const uint8_t*)src + first, n - first);
+}
+
+void ring_read_locked(size_t logical, void* dst, size_t n) {
+    size_t p = g_head + logical;
+    if (p >= g_dcap) p -= g_dcap;
+    const size_t first = (n < g_dcap - p) ? n : g_dcap - p;
+    memcpy(dst, dring() + p, first);
+    if (n > first) memcpy((uint8_t*)dst + first, dring(), n - first);
+}
 
 void write_global_header_locked() {
     PcapGlobal g{};
@@ -44,33 +76,29 @@ void write_global_header_locked() {
     g.snaplen  = nordic_pcap::PCAP_SNAPLEN;
     g.linktype = nordic_pcap::PCAP_LINKTYPE;
     memcpy(g_buf, &g, sizeof(g));
-    g_used = sizeof(g);
-}
-
-// Walk record boundaries forward until we've skipped at least `bytes_to_drop`.
-// `*out_records` receives the number of whole records skipped, so the drop
-// counter can report frames lost rather than reclaim events.
-size_t next_boundary_after_locked(size_t bytes_to_drop, uint32_t* out_records) {
-    size_t o = GLOBAL_HDR_LEN;
-    size_t dropped = 0;
-    uint32_t records = 0;
-    while (o + sizeof(PcapRec) <= g_used) {
-        PcapRec rec;
-        memcpy(&rec, g_buf + o, sizeof(rec));
-        size_t rec_total = sizeof(rec) + rec.incl_len;
-        if (o + rec_total > g_used) break;
-        dropped += rec_total;
-        o += rec_total;
-        records++;
-        if (dropped >= bytes_to_drop) break;
-    }
-    if (out_records) *out_records = records;
-    return o;
 }
 
 void reset_ring_locked() {
     write_global_header_locked();
+    g_head    = 0;
+    g_data    = 0;
     g_dropped = 0;
+}
+
+// Drop oldest records until `need` bytes are free. Lazy: one or two records
+// per append once the ring is full, O(1) amortized, never a bulk move.
+void reclaim_locked(size_t need) {
+    while (g_dcap - g_data < need) {
+        if (g_data < sizeof(PcapRec)) { reset_ring_locked(); return; }   // torn; cannot happen, but do not spin
+        PcapRec rec;
+        ring_read_locked(0, &rec, sizeof(rec));
+        const size_t rec_total = sizeof(rec) + rec.incl_len;
+        if (rec_total > g_data)      { reset_ring_locked(); return; }
+        g_head += rec_total;
+        if (g_head >= g_dcap) g_head -= g_dcap;
+        g_data -= rec_total;
+        g_dropped++;
+    }
 }
 
 } // namespace
@@ -84,8 +112,9 @@ bool init() {
         uint8_t* p = (uint8_t*)heap_caps_malloc(CAP_TIERS[i],
                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (p) {
-            g_buf = p;
-            g_cap = CAP_TIERS[i];
+            g_buf  = p;
+            g_cap  = CAP_TIERS[i];
+            g_dcap = g_cap - GLOBAL_HDR_LEN;
             Serial.printf("[session_pcap] tier %u ok: %u bytes in PSRAM\n",
                           (unsigned)i, (unsigned)g_cap);
             break;
@@ -157,10 +186,15 @@ void append(const scan::Frame& f) {
 
     // Serialize into a local stage buffer, then move it under the lock.
     static uint8_t stage[nordic_pcap::FRAME_OVERHEAD + scan::MAX_PAYLOAD];
-    size_t body = nordic_pcap::build_frame(f, stage);
+    const size_t body    = nordic_pcap::build_frame(f, stage);
     const size_t rec_len = sizeof(PcapRec) + body;
+    if (rec_len > g_dcap) return;
 
-    if (rec_len > g_cap - GLOBAL_HDR_LEN) return;
+    PcapRec rec{};
+    rec.ts_sec   = f.ts_sec;
+    rec.ts_usec  = f.ts_usec;
+    rec.incl_len = (uint32_t)body;
+    rec.orig_len = (uint32_t)body;
 
     xSemaphoreTake(g_lock, portMAX_DELAY);
 
@@ -170,38 +204,15 @@ void append(const scan::Frame& f) {
         return;
     }
 
-    if (g_used + rec_len > g_cap) {
-        // Reclaim roughly half the buffer -- amortizes memmove cost.
-        const size_t want_free = g_cap / 2;
-        uint32_t     records   = 0;
-        const size_t drop_to   = next_boundary_after_locked(want_free, &records);
-        if (drop_to > GLOBAL_HDR_LEN && drop_to <= g_used) {
-            const size_t moved = g_used - drop_to;
-            memmove(g_buf + GLOBAL_HDR_LEN, g_buf + drop_to, moved);
-            g_used = GLOBAL_HDR_LEN + moved;
-            // Count the frames actually discarded, not the reclaim event: one
-            // wrap throws away tens of thousands of adverts and the dashboard
-            // used to report that as "dropped: 1".
-            g_dropped += records;
-        } else {
-            g_dropped += records;
-            write_global_header_locked();
-        }
-    }
-
-    PcapRec rec{};
-    rec.ts_sec   = f.ts_sec;
-    rec.ts_usec  = f.ts_usec;
-    rec.incl_len = (uint32_t)body;
-    rec.orig_len = (uint32_t)body;
-    memcpy(g_buf + g_used, &rec, sizeof(rec));
-    memcpy(g_buf + g_used + sizeof(rec), stage, body);
-    g_used += rec_len;
+    reclaim_locked(rec_len);
+    ring_write_locked(g_data,               &rec,  sizeof(rec));
+    ring_write_locked(g_data + sizeof(rec), stage, body);
+    g_data += rec_len;
 
     xSemaphoreGive(g_lock);
 }
 
-size_t   size()      { return g_used; }
+size_t   size()      { return GLOBAL_HDR_LEN + g_data; }
 size_t   capacity()  { return g_cap; }
 uint32_t dropped()   { return g_dropped; }
 
@@ -212,11 +223,21 @@ size_t read_chunk(size_t offset, uint8_t* out, size_t len) {
     if (g_state != State::STOPPED) return 0;
     xSemaphoreTake(g_lock, portMAX_DELAY);
     size_t copied = 0;
-    if (g_state == State::STOPPED && offset < g_used) {
-        const size_t remain = g_used - offset;
-        const size_t n = (len < remain) ? len : remain;
-        memcpy(out, g_buf + offset, n);
-        copied = n;
+    if (g_state == State::STOPPED) {
+        // Logical file = fixed 24-byte header, then the ring oldest-first.
+        if (offset < GLOBAL_HDR_LEN) {
+            const size_t n = (len < GLOBAL_HDR_LEN - offset) ? len : GLOBAL_HDR_LEN - offset;
+            memcpy(out, g_buf + offset, n);
+            copied += n; offset += n; out += n; len -= n;
+        }
+        if (len && offset >= GLOBAL_HDR_LEN) {
+            const size_t logical = offset - GLOBAL_HDR_LEN;
+            if (logical < g_data) {
+                const size_t n = (len < g_data - logical) ? len : g_data - logical;
+                ring_read_locked(logical, out, n);
+                copied += n;
+            }
+        }
     }
     xSemaphoreGive(g_lock);
     return copied;
