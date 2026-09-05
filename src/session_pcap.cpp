@@ -23,6 +23,16 @@ struct __attribute__((packed)) PcapRec {
     uint32_t incl_len, orig_len;
 };
 
+// dring() below computes the ring's start as g_buf + GLOBAL_HDR_LEN -- a
+// constant in session_pcap.h, independent of this struct. write_global_header
+// _locked() writes sizeof(PcapGlobal) bytes at g_buf. If the two ever
+// disagreed, the ring would start over the tail of the header (or leave an
+// unwritten gap before it) with no error, no crash, just quietly corrupted
+// captures. They agree today (both 24); pin it so a future field added to
+// PcapGlobal without updating GLOBAL_HDR_LEN fails the build instead.
+static_assert(sizeof(PcapGlobal) == GLOBAL_HDR_LEN,
+              "PcapGlobal size must match session_pcap::GLOBAL_HDR_LEN");
+
 // Tiered PSRAM allocation. First entry that succeeds wins; nothing falls
 // through to DRAM (that path OOM-crashed the ESP32 previously).
 #ifdef OUISPY_SESSION_CAP

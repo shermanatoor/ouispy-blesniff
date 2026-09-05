@@ -164,6 +164,130 @@ int main() {
         CHECK(std::string(name) == "CompleteFirst", "complete name kept regardless of AD order");
     }
 
+    // ================= adversarial: malformed AD structures =================
+    // A BLE advertisement is attacker-controlled data from the air -- anyone
+    // in range can craft a payload. These push scan::Frame.payload directly
+    // (bypassing push_ad's well-formed encoder) to exercise for_each_ad()'s
+    // own bounds checks, then extract_* on top of it. Built to run under
+    // -fsanitize=address,undefined; a real OOB read here is a crash any
+    // nearby device could trigger, not just a logic mismatch.
+
+    // AD length byte claims more data than the payload actually holds.
+    {
+        auto f = mkframe();
+        f.payload[0] = 0xFF;              // "254 bytes of AD data follow"
+        f.payload[1] = 0x03;              // COMPLETE_16BIT_UUIDS
+        f.payload[2] = 0xAA;              // only 1 byte of real data present
+        f.payload_len = 3;
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n == 0 && out[0] == 0, "AD claiming overrun length yields nothing, no OOB read");
+
+        char name[32] = {0};
+        text_summary::extract_name(f, name, sizeof(name));
+        CHECK(name[0] == 0, "extract_name on the same overrun frame: no crash, no output");
+    }
+
+    // 128-bit UUID AD whose declared length is not a multiple of 16 (a
+    // trailing partial UUID) -- the incomplete tail must be ignored, not read.
+    {
+        auto f = mkframe();
+        uint8_t d[16 + 5];                // one full UUID + 5 leftover bytes
+        base128_le(d, 0xFEB8);
+        memset(d + 16, 0x41, 5);
+        push_ad(f, 0x07, d, sizeof(d));
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n > 0 && std::string(out) == "0xFEB8",
+              "128-bit UUID list with a non-multiple-of-16 trailing remainder: only the full UUID read");
+    }
+
+    // 32-bit UUID AD whose declared length is not a multiple of 4.
+    {
+        auto f = mkframe();
+        uint8_t d[4 + 3] = {0x8F, 0xFE, 0x00, 0x00, 0x11, 0x22, 0x33};
+        push_ad(f, 0x05, d, sizeof(d));
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n > 0 && std::string(out) == "0xFE8F",
+              "32-bit UUID list with a non-multiple-of-4 trailing remainder: only the full UUID read");
+    }
+
+    // Service Data ADs one byte short of the minimum this code reads from.
+    {
+        auto f = mkframe();
+        uint8_t one = 0xAA;
+        push_ad(f, 0x16, &one, 1);         // SERVICE_DATA_16 needs 2 bytes, has 1
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n == 0, "1-byte SERVICE_DATA_16 (needs 2): skipped, no OOB read");
+    }
+    {
+        auto f = mkframe();
+        uint8_t three[3] = {0x11, 0x22, 0x33};
+        push_ad(f, 0x20, three, 3);         // SERVICE_DATA_32 needs 4 bytes, has 3
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n == 0, "3-byte SERVICE_DATA_32 (needs 4): skipped, no OOB read");
+    }
+    {
+        auto f = mkframe();
+        uint8_t fifteen[15]; memset(fifteen, 0x55, sizeof(fifteen));
+        push_ad(f, 0x21, fifteen, sizeof(fifteen));   // SERVICE_DATA_128 needs 16, has 15
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n == 0, "15-byte SERVICE_DATA_128 (needs 16): skipped, no OOB read");
+    }
+
+    // Zero-length AD entries (legal padding some stacks emit) interleaved
+    // with real ones must not desync the parser.
+    {
+        auto f = mkframe();
+        f.payload[0] = 0x00;               // zero-length AD (skip one byte)
+        uint8_t d[2]; le16(d, 0xFC81);
+        // manually place a well-formed 16-bit UUID AD right after the zero pad
+        f.payload[1] = 0x03; f.payload[2] = 0x03; f.payload[3] = d[0]; f.payload[4] = d[1];
+        f.payload_len = 5;
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n > 0 && std::string(out) == "0xFC81",
+              "zero-length AD padding before a real AD does not desync the parser");
+    }
+
+    // Maximum-size payload (256 bytes, scan::MAX_PAYLOAD) packed with the
+    // smallest possible AD structures (length=1, i.e. a bare type byte with
+    // no data) back to back -- worst case for for_each_ad()'s loop bound.
+    {
+        auto f = mkframe();
+        f.ll_pdu_type = scan::LL_ADV_NONCONN_IND;   // keep traits() to just what this test checks
+        for (size_t i = 0; i + 1 < scan::MAX_PAYLOAD; i += 2) {
+            f.payload[i] = 1;              // length=1: just the type byte, no data
+            f.payload[i + 1] = 0xFF;        // MANUFACTURER_SPECIFIC, but dlen=0
+        }
+        f.payload_len = scan::MAX_PAYLOAD;
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n == 0, "max-size payload of empty-data ADs: parses to completion, no crash");
+        char name[32] = {0};
+        text_summary::extract_name(f, name, sizeof(name));
+        CHECK(name[0] == 0, "same max-size payload through extract_name: no crash");
+        uint8_t tr = text_summary::traits(f);
+        CHECK(tr == text_summary::TR_HAS_MFR, "same payload through traits(): MFR bit set, no crash");
+    }
+
+    // AD length byte claiming more data than actually remains in the payload,
+    // positioned so i+1+ad_len computes right at the size_t/uint8_t boundary
+    // -- must reject (return early), not read past payload_len or wrap.
+    {
+        auto f = mkframe();
+        f.payload[0] = 0xFF;   // ad_len=255 -> claims 254 bytes of data after the type byte
+        f.payload[1] = 0x03;
+        f.payload_len = 200;   // 0+1+255=256 > 200: genuinely overruns this payload
+        char out[80] = {0};
+        size_t n = text_summary::extract_service_uuids(f, out, sizeof(out));
+        CHECK(n == 0, "AD length claiming more than remains in the payload: rejected, no OOB read");
+    }
+
     printf("\n%s\n", g_fail == 0 ? "ALL PASS" : "FAILURES PRESENT");
     return g_fail ? 1 : 0;
 }

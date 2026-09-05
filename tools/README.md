@@ -70,7 +70,26 @@ g++ -std=c++17 -I tools/hosttest/stub -o tools/hosttest/test_text_summary tools/
 `test_text_summary.cpp` covers `text_summary.cpp`'s AD-structure parsing:
 16/32/128-bit and Service-Data service UUIDs (including reduction to the short
 form, non-reduction of a genuinely custom 128-bit UUID, and de-duplication
-across encodings), and complete-vs-shortened local name precedence.
+across encodings), complete-vs-shortened local name precedence, and a battery
+of adversarial/malformed AD structures (overrun length bytes, truncated
+Service Data, zero-length padding, a max-size payload packed with the
+smallest possible AD entries) -- this parser runs on raw over-the-air BLE
+advertisement bytes, which anyone in range can craft.
+
+To verify those adversarial cases under AddressSanitizer/UBSan (stronger than
+the bounds-check-by-inspection the plain build gives you), install a
+sanitizer-capable toolchain and rebuild statically:
+
+```bash
+# llvm-mingw (ucrt variant) ships libclang_rt.asan for Windows; plain MinGW
+# GCC does not. `scoop install main/mingw-mstorsjo-llvm-ucrt`
+clang++ -fsanitize=address,undefined -std=c++17 -g -O0 -static     -I tools/hosttest/stub -o test_text_summary_asan tools/hosttest/test_text_summary.cpp
+./test_text_summary_asan
+```
+
+(On Windows, a sandboxed shell may fail to resolve the `api-ms-win-crt-*`
+API-set redirections this binary needs even with `-static` -- that is a
+sandbox artifact, not a build problem; run it from an unrestricted shell.)
 
 # Dashboard headless-DOM test
 
