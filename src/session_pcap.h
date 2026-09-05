@@ -36,10 +36,12 @@ size_t   capacity();            // actual allocated cap (from CAP_TIERS)
 uint32_t dropped();
 
 // Downloads only permitted from STOPPED. read_chunk() takes the session
-// mutex per chunk and memcpys straight out of the live ring. The STOPPED
-// guarantee is what makes this safe -- if the state ever leaves STOPPED
-// mid-download (Record is the only such transition, and it wipes the ring)
-// read_chunk() returns 0 for the remainder so the response truncates cleanly.
+// mutex per chunk and copies out of the live ring, presenting it as a linear
+// file: 24-byte header, then records oldest-first (the ring is circular
+// underneath; a record may straddle the wrap). The STOPPED guarantee is what
+// makes this safe -- if the state ever leaves STOPPED mid-download (Record is
+// the only such transition, and it wipes the ring) read_chunk() returns 0 for
+// the remainder so the response truncates cleanly.
 //
 // Design decision: Record wins over an in-flight download rather than being
 // refused. The download can be retried; the user's intent to start a fresh

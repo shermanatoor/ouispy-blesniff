@@ -986,7 +986,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     return (b/1024/1024).toFixed(2)+' MB';
   }
 
-  function pushPacket(p) {
+  function pushPacket(p, flt) {
     // p: {i,t,c,r,x?,y,a,m,l,f,n?,s?,u?,v?}
     const y    = p.y || '';
     const a    = p.a || '';
@@ -1061,7 +1061,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       '<td class="right">'+p.l+'</td>';
     rows.appendChild(tr_el);
     while (rows.childElementCount > MAX_ROWS) rows.removeChild(rows.firstChild);
-    applyRowFilter(tr_el);
+    applyRowFilter(tr_el, flt);
   }
 
   // --- Follow (auto-scroll) --------------------------------------------
@@ -1338,10 +1338,14 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     }
     return true;
   }
-  function applyRowFilter(tr) {
-    const f = parseTextFilter();
-    const hitsOnly = $('hitsOnly').checked;
-    tr.style.display = rowMatch(tr, f, hitsOnly, activeByGroup()) ? '' : 'none';
+  // The parsed filter is built once per render batch and handed down --
+  // re-running the regexes and group map for every row was the hot path.
+  function currentFilter() {
+    return { f: parseTextFilter(), hitsOnly: $('hitsOnly').checked, need: activeByGroup() };
+  }
+  function applyRowFilter(tr, flt) {
+    flt = flt || currentFilter();
+    tr.style.display = rowMatch(tr, flt.f, flt.hitsOnly, flt.need) ? '' : 'none';
   }
   function applyFilter() {
     const f = parseTextFilter();
@@ -1369,7 +1373,8 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       flushScheduled = false;
       const batch = pending;
       pending = [];
-      for (const p of batch) pushPacket(p);
+      const flt = currentFilter();
+      for (const p of batch) pushPacket(p, flt);
       let shown = 0;
       rows.querySelectorAll('tr').forEach(tr => { if (tr.style.display !== 'none') shown++; });
       $('rowCount').textContent = shown;

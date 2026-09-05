@@ -66,11 +66,13 @@ size_t append_pkt_json(const scan::Frame& f, char* out, size_t cap) {
         doc["v"] = text_summary::mfr_shortname(mfr); // mfr shortname
     }
 
-    size_t n = measureJson(doc);
-    // serializeJson(doc, void*, size) does not NUL-terminate, so `cap` is the
-    // exact byte budget. Separator + closing "]}" are reserved by the caller.
-    if (n > cap) return 0;
-    return serializeJson(doc, out, cap);
+    // One pass straight into the batch. serializeJson(doc, void*, size) does
+    // not NUL-terminate and truncates at `cap`, so n == cap is ambiguous
+    // (exact fit or cut short) -- treat it as "did not fit"; the caller
+    // flushes and retries into a fresh batch where it cannot be ambiguous.
+    // This replaced measureJson() + serializeJson(): two full walks per advert.
+    const size_t n = serializeJson(doc, out, cap);
+    return (n == 0 || n >= cap) ? 0 : n;
 }
 
 void send_status() {

@@ -47,17 +47,26 @@ bool ring_alloc(Ring& r, size_t slot_count, bool prefer_psram) {
 }
 
 inline size_t ring_next(const Ring& r, size_t i) {
-    return (i + 1) % r.capacity;
+    const size_t n = i + 1;
+    return n == r.capacity ? 0 : n;      // no modulo: capacity is runtime, so % is a real divide
+}
+
+// A Frame is 284 bytes but a legacy advert uses ~60 of them. Both copies below
+// run inside a spinlock with interrupts off, into or out of PSRAM, twice per
+// advert -- so copy the header plus payload_len, not the whole struct.
+inline size_t frame_bytes(const Frame& f) {
+    return offsetof(Frame, payload) + f.payload_len;
 }
 
 void ring_push(Ring& r, const Frame& f) {
+    const size_t n = frame_bytes(f);
     portENTER_CRITICAL_ISR(&r.mux);
     size_t next_head = ring_next(r, r.head);
     if (next_head == r.tail) {
         r.tail = ring_next(r, r.tail);
         r.dropped++;
     }
-    r.slots[r.head] = f;
+    memcpy(&r.slots[r.head], &f, n);
     r.head = next_head;
     portEXIT_CRITICAL_ISR(&r.mux);
 }
@@ -66,7 +75,8 @@ bool ring_pop(Ring& r, Frame* out) {
     bool got = false;
     portENTER_CRITICAL(&r.mux);
     if (r.tail != r.head) {
-        *out = r.slots[r.tail];
+        const Frame& s = r.slots[r.tail];
+        memcpy(out, &s, frame_bytes(s));
         r.tail = ring_next(r, r.tail);
         got = true;
     }
@@ -224,10 +234,16 @@ uint32_t adverts_per_sec() {
     // loop(). Only the caller that wins the compare-exchange rolls the window,
     // so a second caller can no longer zero a window it did not open (which
     // made the dashboard read 0 pps whenever a script polled CMD:STATUS).
-    if (now - last >= 1000 &&
+    const uint32_t elapsed = now - last;
+    if (elapsed >= 1000 &&
         g_last_pps_ms.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
-        g_per_sec.store(g_this_sec.exchange(0, std::memory_order_relaxed),
-                        std::memory_order_relaxed);
+        // Divide by the window that actually elapsed, not by an assumed one
+        // second. Nothing guarantees this is polled at 1 Hz -- with no
+        // dashboard client connected the first CMD:STATUS after a quiet spell
+        // reported a whole minute of adverts as one second (observed: 2619
+        // pps against a true rate of ~45).
+        const uint64_t count = g_this_sec.exchange(0, std::memory_order_relaxed);
+        g_per_sec.store((uint32_t)(count * 1000u / elapsed), std::memory_order_relaxed);
     }
     return g_per_sec.load(std::memory_order_relaxed);
 }

@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/ledc.h>
+#include <esp_system.h>
 #include <ctype.h>
 
 #include "config.h"
@@ -111,6 +112,25 @@ void pcap_writer_task(void*) {
     }
 }
 
+// Why the last boot happened. Surfaced in the banner and CMD:STATUS so an
+// unexpected reset (panic, watchdog, brownout) is visible instead of just
+// looking like a device that quietly came back IDLE.
+const char* reset_reason_name() {
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   return "poweron";
+        case ESP_RST_EXT:       return "external";
+        case ESP_RST_SW:        return "software";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int_wdt";
+        case ESP_RST_TASK_WDT:  return "task_wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
 void print_banner() {
     Serial.println();
     Serial.println(F(" ██████╗ ██╗   ██╗██╗      ███████╗██████╗ ██╗   ██╗    ██████╗ ██╗     ███████╗███████╗███╗   ██╗██╗███████╗███████╗"));
@@ -124,6 +144,7 @@ void print_banner() {
     Serial.print(F("  built="));
     Serial.print(F(__DATE__ " " __TIME__));
     Serial.println();
+    Serial.print(F("Reset reason: ")); Serial.println(reset_reason_name());
     Serial.println(F("Passive receive only. Nothing is transmitted."));
     Serial.println(F("Session PCAP boots IDLE. POST /api/session/record (or click"));
     Serial.println(F("RECORD in the dashboard) to start capturing to the ring."));
@@ -160,7 +181,7 @@ void handle_serial_cmd(const String& raw) {
             "\"total\":%u,\"pps\":%u,\"drop_pcap\":%u,\"drop_dash\":%u,\"drop_ws\":%u,\"fw\":\"%s\","
             "\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"ap_mac\":\"%s\",\"ap_stations\":%u,"
             "\"session_bytes\":%u,\"session_cap\":%u,\"session_drop\":%u,"
-            "\"state\":\"%s\",\"psram_free\":%u,\"heap_free\":%u}\n",
+            "\"state\":\"%s\",\"psram_free\":%u,\"heap_free\":%u,\"reset\":\"%s\"}\n",
             (unsigned)config::get().scan_window_ms,
             (unsigned)config::get().scan_interval_ms,
             (unsigned)config::get().ft_mask,
@@ -177,7 +198,8 @@ void handle_serial_cmd(const String& raw) {
             (unsigned)session_pcap::dropped(),
             session_pcap::state_name(),
             (unsigned)ESP.getFreePsram(),
-            (unsigned)ESP.getFreeHeap());
+            (unsigned)ESP.getFreeHeap(),
+            reset_reason_name());
         return;
     }
     if (U == "VERSION") {
