@@ -45,3 +45,11 @@ in the registries and the validator fails the build if one goes stale.
 (Detector OUI Database) and typically belong to the radio-module maker --
 Espressif, Telink -- so they match other devices using the same module. The
 validator reports these as `obs` and never fails them; do not prune them.
+
+## Confidence tiers
+
+`ouis` are registry-assigned to the vendor; `ouisBroad` are radio-module makers
+and unattributed prefixes seen on the vendor's hardware. A `ouisBroad`-only
+match renders as `FLOCK?` with a dashed border and does not count as a hit when
+**Confident only** is ticked, because an Espressif or Liteon OUI is shared with
+every unrelated device built on the same module.

@@ -33,16 +33,21 @@ SOURCES = {
         "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/member_uuids.yaml",
 }
 
-# Field-observed identifiers from the Detector OUI Database research. They do
-# not belong to the vendor in the registries (most are the radio-module maker),
-# so they are reported as "obs" rather than failed. Never prune these.
-OBSERVED_OUI = {
-    "ring":   {"000dc5", "14cc20", "a47733", "7c8c6c"},
-    "flock":  {"a4cf12", "246f28", "3c71bf", "48e729", "98cdac"},
-    "skydio": {"24698e"},
-    "meta":   {"7c2a9e", "cc660a", "f40343", "5ce91e", "a4c138", "58d56e", "2c41a1", "44d9e7", "9cd917"},
+# `ouisBroad` in the source is the field-observed tier: radio-module makers and
+# unattributed prefixes seen on the vendor's hardware. They are reported as
+# "obs" and never failed -- the point of the tier is that they do NOT match the
+# registry. `ouis` must stay registry-clean, so it is checked strictly.
+OBSERVED_CID = {
+    "dji":    {0x0BF3},          # observed; registry says PONE Biometrics
+    "parrot": {0x004D},          # observed; registry says Staccato
+    "flock":  {0x09C8},          # XUNTONG -- the battery supplier, not Flock itself
 }
-OBSERVED_CID = {"dji": {0x0BF3}, "parrot": {0x004D}}
+# Proprietary service UUIDs a vendor advertises without registering them with
+# the SIG. Absent from member_uuids.yaml by definition, so exempt from the
+# assignment check -- but they must still be vendor-specific enough to identify.
+OBSERVED_UUID = {
+    "flock": {0x3100, 0x3200, 0x3300, 0x3400, 0x3500},   # Raven gunshot detector
+}
 OBSERVED_MFR = {"DJI (observed)", "Parrot (observed)"}
 
 # What a registry organization name must contain to count as "this vendor".
@@ -92,11 +97,15 @@ def load_tables():
     html = io.open(os.path.join(ROOT, "src", "dashboard_html.h"), encoding="utf-8").read()
     blk = html[html.index("const VENDORS = ["):html.index("];", html.index("const VENDORS = ["))]
     vendors = {}
-    for m in re.finditer(r"id:'(\w+)'.*?ouis:\[(.*?)\].*?cids:\[(.*?)\].*?svcs:\[(.*?)\]", blk, re.S):
+    for m in re.finditer(r"id:'(\w+)'.*?ouis:\[(.*?)\](.*?)cids:\[(.*?)\].*?svcs:\[(.*?)\]", blk, re.S):
         # arrays carry "// registry: ..." / "// observed" annotations
         strip = lambda x: re.sub(r"//.*", "", x)   # . never matches a newline
         lst = lambda x: [t.strip().strip("'") for t in strip(x).split(",") if t.strip()]
-        vendors[m.group(1)] = {"ouis": lst(m.group(2)), "cids": lst(m.group(3)), "svcs": lst(m.group(4))}
+        mid = m.group(3)
+        bm = re.search(r"ouisBroad:\[(.*?)\]", mid, re.S)
+        vendors[m.group(1)] = {"ouis": lst(m.group(2)),
+                               "ouisBroad": lst(bm.group(1)) if bm else [],
+                               "cids": lst(m.group(4)), "svcs": lst(m.group(5))}
     cpp = io.open(os.path.join(ROOT, "src", "text_summary.cpp"), encoding="utf-8").read()
     mfr = dict(re.findall(r'case 0x([0-9A-Fa-f]{4}): return "([^"]+)";', cpp))
     return vendors, mfr
@@ -115,10 +124,13 @@ def main():
             key = o.replace(":", "").lower()
             org = oui.get(key)
             ok = bool(org and re.search(pat, org, re.I))
-            obs = key in OBSERVED_OUI.get(v, set())
+            obs = False
             bad += not (ok or obs)
             tag = "ok " if ok else ("obs" if obs else "BAD")
             print("  %s %-7s OUI %s -> %s" % (tag, v, o, org or "UNASSIGNED"))
+        for o in d["ouisBroad"]:
+            org = oui.get(o.replace(":", "").lower())
+            print("  obs %-7s OUI %s -> %s  (broad tier)" % (v, o, org or "UNASSIGNED"))
         for c in d["cids"]:
             org = cid.get(int(c, 16))
             ok = bool(org and re.search(pat + r"|amazon", org, re.I))
@@ -129,8 +141,11 @@ def main():
         for u in d["svcs"]:
             org = uuid.get(int(u, 16))
             ok = bool(org and re.search(pat, org, re.I))
-            bad += not ok
-            print("  %s %-7s UUID 0x%s -> %s" % ("ok " if ok else "BAD", v, u.upper(), org or "UNASSIGNED"))
+            obs = int(u, 16) in OBSERVED_UUID.get(v, set())
+            bad += not (ok or obs)
+            tag = "ok " if ok else ("obs" if obs else "BAD")
+            print("  %s %-7s UUID 0x%s -> %s%s"
+                  % (tag, v, u.upper(), org or "UNASSIGNED", "  (proprietary)" if obs else ""))
 
     print("== mfr_shortname ==")
     for h, name in mfr.items():

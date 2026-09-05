@@ -129,6 +129,7 @@ const char* mfr_shortname(uint16_t id) {
         case 0x0499: return "Ruuvi";
         // Surveillance / drones / smartglasses
         case 0x034D: return "Axon/TASER";
+        case 0x09C8: return "XUNTONG (Flock battery)";
         case 0x01AB: return "Meta";
         case 0x058E: return "Meta (Reality Labs)";
         case 0x0D53: return "Luxottica (Meta/Ray-Ban)";

@@ -389,6 +389,14 @@ void handle_session_pcap(AsyncWebServerRequest* req) {
             size_t want = maxLen < CHUNK ? maxLen : CHUNK;
             return session_pcap::read_chunk(index, buf, want);
         });
+    if (!r) {
+        // new AsyncChunkedResponse returned null (heap exhausted, and this
+        // build has no exceptions). Dereferencing it panics the device --
+        // answer 503 instead, and release the in-flight count we just took
+        // since onDisconnect still fires for this request.
+        req->send(503, "application/json", "{\"error\":\"out of memory\"}");
+        return;
+    }
     char filename[64];
     snprintf(filename, sizeof(filename), "attachment; filename=\"ouispy-blesniff-%lu.pcap\"",
              (unsigned long)(millis() / 1000));
