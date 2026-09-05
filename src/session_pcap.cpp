@@ -48,9 +48,12 @@ void write_global_header_locked() {
 }
 
 // Walk record boundaries forward until we've skipped at least `bytes_to_drop`.
-size_t next_boundary_after_locked(size_t bytes_to_drop) {
+// `*out_records` receives the number of whole records skipped, so the drop
+// counter can report frames lost rather than reclaim events.
+size_t next_boundary_after_locked(size_t bytes_to_drop, uint32_t* out_records) {
     size_t o = GLOBAL_HDR_LEN;
     size_t dropped = 0;
+    uint32_t records = 0;
     while (o + sizeof(PcapRec) <= g_used) {
         PcapRec rec;
         memcpy(&rec, g_buf + o, sizeof(rec));
@@ -58,8 +61,10 @@ size_t next_boundary_after_locked(size_t bytes_to_drop) {
         if (o + rec_total > g_used) break;
         dropped += rec_total;
         o += rec_total;
-        if (dropped >= bytes_to_drop) return o;
+        records++;
+        if (dropped >= bytes_to_drop) break;
     }
+    if (out_records) *out_records = records;
     return o;
 }
 
@@ -168,13 +173,18 @@ void append(const scan::Frame& f) {
     if (g_used + rec_len > g_cap) {
         // Reclaim roughly half the buffer -- amortizes memmove cost.
         const size_t want_free = g_cap / 2;
-        const size_t drop_to = next_boundary_after_locked(want_free);
+        uint32_t     records   = 0;
+        const size_t drop_to   = next_boundary_after_locked(want_free, &records);
         if (drop_to > GLOBAL_HDR_LEN && drop_to <= g_used) {
             const size_t moved = g_used - drop_to;
             memmove(g_buf + GLOBAL_HDR_LEN, g_buf + drop_to, moved);
             g_used = GLOBAL_HDR_LEN + moved;
-            g_dropped++;
+            // Count the frames actually discarded, not the reclaim event: one
+            // wrap throws away tens of thousands of adverts and the dashboard
+            // used to report that as "dropped: 1".
+            g_dropped += records;
         } else {
+            g_dropped += records;
             write_global_header_locked();
         }
     }

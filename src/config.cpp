@@ -74,6 +74,12 @@ void set_scan_window(uint16_t ms)   { cfg.scan_window_ms = ms;   save(); }
 void set_scan_interval(uint16_t ms) { cfg.scan_interval_ms = ms; save(); }
 void set_ftmask(uint8_t m)          { cfg.ft_mask = m ? m : FT_DEFAULT; save(); }
 
+void set_scan_params(uint16_t window_ms, uint16_t interval_ms) {
+    cfg.scan_window_ms   = window_ms;
+    cfg.scan_interval_ms = interval_ms;
+    save();   // clamp() inside save() now sees both new values together
+}
+
 void set_ap(const char* ssid, const char* pass) {
     if (ssid && *ssid) strlcpy(cfg.ap_ssid, ssid, sizeof(cfg.ap_ssid));
     if (pass) {

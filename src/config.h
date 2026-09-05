@@ -38,6 +38,10 @@ Config&     get();
 
 void set_scan_window(uint16_t ms);
 void set_scan_interval(uint16_t ms);
+// Apply both at once. Setting them one at a time clamps window against the
+// *old* interval, which silently loses a window increase that is only legal
+// under the new interval (e.g. 30/100 -> 200/400 would land on 100/400).
+void set_scan_params(uint16_t window_ms, uint16_t interval_ms);
 void set_ftmask(uint8_t m);
 void set_ap(const char* ssid, const char* pass);
 

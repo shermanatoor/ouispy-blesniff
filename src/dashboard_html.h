@@ -546,7 +546,6 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       <span class="banner-compact">OUI-SPY // BLESNIFF</span>
     </div>
     <div class="status">
-      <span>Out</span><span class="v good" id="statOut">--</span>
       <span>Win</span><span class="v" id="statWin">--</span>
       <span>Int</span><span class="v" id="statInt">--</span>
       <span>Up</span><span class="v" id="statUp">--</span>
@@ -559,14 +558,6 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   <div class="scrim" id="scrim"></div>
 
   <aside class="rail" id="rail">
-
-    <section>
-      <h3>Output</h3>
-      <div class="radio-row">
-        <input type="radio" name="out" id="outPcap"><label for="outPcap">PCAP</label>
-        <input type="radio" name="out" id="outText"><label for="outText">Text</label>
-      </div>
-    </section>
 
     <section>
       <h3>Scan</h3>
@@ -1100,9 +1091,13 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     } catch(e){}
   }
   $('btnRecord').onclick = () => {
-    // Optimistic: from idle/stopped/paused all land in recording.
-    applySessState('recording');
-    sessPost('/api/session/record');
+    // From PAUSED this button reads RESUME, and /api/session/record clears the
+    // ring on entry -- posting it here threw away the capture the user had just
+    // paused. Route paused -> resume, everything else -> record.
+    const path = (sessState === 'paused') ? '/api/session/resume'
+                                          : '/api/session/record';
+    applySessState('recording');   // mutates sessState, so read it above
+    sessPost(path);
   };
   $('btnPause').onclick = () => {
     applySessState('paused');
@@ -1134,10 +1129,12 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
                   c[10].textContent].join(','));
     });
     const blob = new Blob([lines.join('\n')], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    a.href = url;
     a.download = 'ouispy-blesniff-' + new Date().toISOString().replace(/[:.]/g,'-') + '.csv';
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);   // else every export leaks
   };
 
   // --- Chip filter -----------------------------------------------------
@@ -1292,7 +1289,6 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch(e) { return; }
       if (msg.type === 'status') {
-        $('statOut').textContent = msg.out || '--';
         $('statUp').textContent = fmtUptime(msg.uptime || 0);
         $('statPps').textContent = msg.pps || 0;
         const drop = (msg.dropped_pcap || 0) + (msg.dropped_dash || 0);
@@ -1350,8 +1346,6 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     try {
       const r = await fetch('/api/config');
       const c = await r.json();
-      $('outPcap').checked = c.out === 0;
-      $('outText').checked = c.out === 1;
       $('scanWin').value = c.scan_win;
       $('scanInt').value = c.scan_int;
       updateScanLabels();
@@ -1386,7 +1380,6 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     if ($('ftAddrPub').checked)    ftmask |= 0x20;
     if ($('ftAddrRnd').checked)    ftmask |= 0x40;
     const body = {
-      out:      $('outPcap').checked ? 0 : 1,
       scan_win: parseInt($('scanWin').value, 10),
       scan_int: parseInt($('scanInt').value, 10),
       ftmask:   ftmask
@@ -1400,10 +1393,18 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
         body: JSON.stringify(body)
       });
       if (r.ok) {
+        // The firmware clamps window/interval, so show what it actually stored
+        // rather than what we asked for.
+        const j = await r.json().catch(() => null);
+        if (j && j.scan_win != null) {
+          $('scanWin').value = j.scan_win;
+          $('scanInt').value = j.scan_int;
+          updateScanLabels();
+        }
         $('save-status').textContent = 'applied';
         $('save-status').className = 'ok';
-        $('statWin').textContent = body.scan_win + 'ms';
-        $('statInt').textContent = body.scan_int + 'ms';
+        $('statWin').textContent = $('scanWin').value + 'ms';
+        $('statInt').textContent = $('scanInt').value + 'ms';
       } else {
         $('save-status').textContent = 'error';
         $('save-status').className = 'err';
@@ -1422,8 +1423,21 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
         headers: {'content-type':'application/json'},
         body: JSON.stringify(body)
       });
-      if (r.ok) setTimeout(() => fetch('/api/reboot', {method:'POST'}), 300);
-    } catch(e){}
+      if (r.ok) {
+        $('save-status').textContent = 'AP saved, rebooting';
+        $('save-status').className = 'ok';
+        setTimeout(() => fetch('/api/reboot', {method:'POST'}), 300);
+      } else {
+        // The firmware rejects a bad SSID/password instead of silently keeping
+        // the old one. Say so rather than rebooting into an unchanged AP.
+        const j = await r.json().catch(() => null);
+        $('save-status').textContent = (j && j.error) ? j.error : 'AP rejected';
+        $('save-status').className = 'err';
+      }
+    } catch(e) {
+      $('save-status').textContent = 'AP save failed';
+      $('save-status').className = 'err';
+    }
   };
   $('btnReboot').onclick = async () => {
     try { await fetch('/api/reboot', {method:'POST'}); } catch(e){}
