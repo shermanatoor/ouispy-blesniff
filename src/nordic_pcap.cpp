@@ -39,12 +39,15 @@ size_t build_frame(const scan::Frame& f, uint8_t* out) {
     // -------- 2-byte LL header --------
     // Byte 0: [ChSel(1) | TxAdd(1) | RxAdd(1) | RFU(1) | PDU type(4)]
     //         bit 0-3 = PDU type
-    //         bit 6   = TxAdd (1 if random address)
-    //         bit 7   = RxAdd (1 if directed advert)
+    //         bit 6   = TxAdd (1 if AdvA is random)
+    //         bit 7   = RxAdd (1 if TargetA is random -- ADV_DIRECT_IND only)
+    // RxAdd is left clear: the HCI advertising report does not carry TargetA
+    // or its type (that arrives in a separate directed-report event NimBLE
+    // does not surface), so asserting it was a guess written into the
+    // capture. For the same reason ADV_DIRECT_IND frames here carry AdvA only.
     uint8_t hdr0 = f.ll_pdu_type & 0x0F;
     bool tx_random = (f.addr_type != scan::ADDR_PUBLIC && f.addr_type != scan::ADDR_UNKNOWN);
     if (tx_random) hdr0 |= 0x40;
-    if (f.ll_pdu_type == scan::LL_ADV_DIRECT_IND) hdr0 |= 0x80;
     // Byte 1: length in low 6 bits (address + AdvData)
     uint8_t len_field = (uint8_t)((ADV_ADDR_LEN + payload_len) & 0x3F);
     *p++ = hdr0;

@@ -823,8 +823,11 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   // the comma-separated list in `svc`), or a case-insensitive name substring.
   // Any signal wins -- BLE MACs are almost always randomized so CID/UUID/name
   // are what actually catches Meta glasses, Axon body cams, DJI drones, etc.
-  function vendorFor(mac, cid, svcStr, name) {
-    const prefix   = mac ? mac.slice(0, 8).toLowerCase() : '';
+  function vendorFor(mac, cid, svcStr, name, addrType) {
+    // Only a public address carries an IEEE OUI. Random-static / RPA / NRP
+    // addresses are locally generated, so a matching first three bytes there
+    // is coincidence and was tagging random devices as a vendor hit.
+    const prefix   = (mac && addrType === 'pub') ? mac.slice(0, 8).toLowerCase() : '';
     const cidLower = cid ? cid.toLowerCase() : '';
     const svcs     = svcStr ? svcStr.toLowerCase().split(',').map(s => s.replace(/^0x/, '').trim()) : [];
     const nameL    = name ? name.toLowerCase() : '';
@@ -932,7 +935,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     if (tr & TR_CONNECTABLE)  keys.add('connectable');
     keys.forEach(bumpChip);
 
-    const vend = vendorFor(addr, mfrHex, svc, name);
+    const vend = vendorFor(addr, mfrHex, svc, name, a.toLowerCase());
     if (vend) {
       hits++;
       vendorHitCounts[vend.id]++;
@@ -1141,6 +1144,17 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
 
   // --- Chip filter -----------------------------------------------------
   const activeChips = new Set();
+  // key -> group ("type" | "addr" | "traits"), from the chip markup. Filtering
+  // is faceted: a row must satisfy EVERY group that has a chip lit, by matching
+  // ANY lit chip within that group. Flat OR across everything meant lighting
+  // ADV_IND and Public showed the union, not the intersection.
+  const chipGroup = {};
+  document.querySelectorAll('#qf .chip[data-key]').forEach(c => { chipGroup[c.dataset.key] = c.dataset.group; });
+  function activeByGroup() {
+    const need = {};
+    activeChips.forEach(k => { const g = chipGroup[k] || '?'; (need[g] = need[g] || []).push(k); });
+    return need;
+  }
   document.querySelectorAll('#qf .chip[data-key]').forEach(chip => {
     chip.addEventListener('click', () => {
       const key = chip.dataset.key;
@@ -1208,10 +1222,12 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
               .replace(/(type|addr|name|svc|mfr|ch):\S+/g,'').trim()
     };
   }
-  function rowMatch(tr, f, hitsOnly) {
+  function rowMatch(tr, f, hitsOnly, need) {
     if (activeChips.size > 0) {
       const rowKeys = (tr.dataset.keys || '').split(' ');
-      if (!rowKeys.some(k => activeChips.has(k))) return false;
+      for (const g in need) {
+        if (!need[g].some(k => rowKeys.includes(k))) return false;
+      }
     }
     if (hitsOnly && tr.dataset.hit !== '1') return false;
     if (f.rssi) {
@@ -1238,17 +1254,18 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   function applyRowFilter(tr) {
     const f = parseTextFilter();
     const hitsOnly = $('hitsOnly').checked;
-    tr.style.display = rowMatch(tr, f, hitsOnly) ? '' : 'none';
+    tr.style.display = rowMatch(tr, f, hitsOnly, activeByGroup()) ? '' : 'none';
   }
   function applyFilter() {
     const f = parseTextFilter();
     const hitsOnly = $('hitsOnly').checked;
+    const need = activeByGroup();
     const any = activeChips.size || hitsOnly || f.rssi || f.type || f.addr ||
                 f.name || f.svc || f.mfr || f.ch || f.free;
     $('fltState').textContent = any ? 'on' : 'off';
     let shown = 0;
     rows.querySelectorAll('tr').forEach(tr => {
-      const on = rowMatch(tr, f, hitsOnly);
+      const on = rowMatch(tr, f, hitsOnly, need);
       tr.style.display = on ? '' : 'none';
       if (on) shown++;
     });
@@ -1293,7 +1310,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       if (msg.type === 'status') {
         $('statUp').textContent = fmtUptime(msg.uptime || 0);
         $('statPps').textContent = msg.pps || 0;
-        const drop = (msg.dropped_pcap || 0) + (msg.dropped_dash || 0);
+        const drop = (msg.dropped_pcap || 0) + (msg.dropped_dash || 0) + (msg.dropped_ws || 0);
         $('statDrop').textContent = drop;
         $('statDrop').className = 'v' + (drop > 0 ? ' bad' : '');
         $('totalPkts').textContent = msg.total || 0;
@@ -1345,6 +1362,16 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   $('scanWin').oninput = updateScanLabels;
   $('scanInt').oninput = updateScanLabels;
 
+  function applyFtmask(m) {
+    $('ftAdvInd').checked      = (m & 0x01) !== 0;
+    $('ftAdvDirect').checked   = (m & 0x02) !== 0;
+    $('ftAdvNonconn').checked  = (m & 0x04) !== 0;
+    $('ftScanRsp').checked     = (m & 0x08) !== 0;
+    $('ftAdvScan').checked     = (m & 0x10) !== 0;
+    $('ftAddrPub').checked     = (m & 0x20) !== 0;
+    $('ftAddrRnd').checked     = (m & 0x40) !== 0;
+  }
+
   async function loadConfig() {
     try {
       const r = await fetch('/api/config');
@@ -1352,13 +1379,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       $('scanWin').value = c.scan_win;
       $('scanInt').value = c.scan_int;
       updateScanLabels();
-      $('ftAdvInd').checked      = (c.ftmask & 0x01) !== 0;
-      $('ftAdvDirect').checked   = (c.ftmask & 0x02) !== 0;
-      $('ftAdvNonconn').checked  = (c.ftmask & 0x04) !== 0;
-      $('ftScanRsp').checked     = (c.ftmask & 0x08) !== 0;
-      $('ftAdvScan').checked     = (c.ftmask & 0x10) !== 0;
-      $('ftAddrPub').checked     = (c.ftmask & 0x20) !== 0;
-      $('ftAddrRnd').checked     = (c.ftmask & 0x40) !== 0;
+      applyFtmask(c.ftmask);
       $('apSsid').value = c.ap_ssid || '';
       $('apPass').value = c.ap_pass || '';
       $('statWin').textContent = c.scan_win + 'ms';
@@ -1404,6 +1425,9 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
           $('scanInt').value = j.scan_int;
           updateScanLabels();
         }
+        // An emptied group comes back fully set -- show that, or the user
+        // sees every box unchecked while the firmware captures everything.
+        if (j && j.ftmask != null) applyFtmask(j.ftmask);
         $('save-status').textContent = 'applied';
         $('save-status').className = 'ok';
         $('statWin').textContent = $('scanWin').value + 'ms';

@@ -180,6 +180,13 @@ void start_scan() {
     s->setInterval(config::get().scan_interval_ms);
     s->setWindow(config::get().scan_window_ms);
     s->setDuplicateFilter(false);      // capture every advert, even repeats
+    // Do not retain results. NimBLE's default (0xFF) disables its own cap and
+    // heap-allocates a NimBLEAdvertisedDevice for every distinct address for
+    // the life of the scan -- and this scan never ends. With RPAs rotating on
+    // every phone and tag in range that is an unbounded leak; the sniffer
+    // slowly eats its heap and dies. With 0, each device is created, handed
+    // to onResult() (which copies what it needs), then freed.
+    s->setMaxResults(0);
     s->setAdvertisedDeviceCallbacks(&g_cb, /*wantDuplicates=*/true);
     s->start(0, nullptr, false);
 }

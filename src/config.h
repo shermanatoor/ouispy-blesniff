@@ -17,9 +17,14 @@ constexpr uint8_t FT_ADDR_RANDOM   = 0x40;
 // Reserved/spare
 constexpr uint8_t FT_SPARE_7       = 0x80;
 
-constexpr uint8_t FT_DEFAULT =
-    FT_ADV_IND | FT_ADV_DIRECT | FT_ADV_NONCONN | FT_SCAN_RSP | FT_ADV_SCAN_IND |
-    FT_ADDR_PUBLIC | FT_ADDR_RANDOM;
+// The two independent gates. Every advert has exactly one PDU type and one
+// address class, so a mask with no bits in either group would capture nothing
+// at all -- clamp() treats an empty group as "no filter on that axis".
+constexpr uint8_t FT_TYPE_BITS =
+    FT_ADV_IND | FT_ADV_DIRECT | FT_ADV_NONCONN | FT_SCAN_RSP | FT_ADV_SCAN_IND;
+constexpr uint8_t FT_ADDR_BITS = FT_ADDR_PUBLIC | FT_ADDR_RANDOM;
+
+constexpr uint8_t FT_DEFAULT = FT_TYPE_BITS | FT_ADDR_BITS;
 
 // The BLE scan and the SoftAP share one 2.4 GHz radio. A scan window that
 // takes the whole interval starves SoftAP beacons and the dashboard goes
