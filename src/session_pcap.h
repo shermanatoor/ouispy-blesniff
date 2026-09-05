@@ -27,13 +27,25 @@ bool     cmd_resume();   // PAUSED -> RECORDING
 bool     cmd_stop();     // RECORDING|PAUSED -> STOPPED
 
 State    state();
-const char* state_name();       // "idle"|"recording"|"paused"|"stopped"
+const char* state_name();            // "idle"|"recording"|"paused"|"stopped" (current state)
+const char* state_name(State s);     // same, for an explicit State (e.g. from get_status())
 
 void     append(const scan::Frame& f);
 
 size_t   size();                // bytes currently held in ring
 size_t   capacity();            // actual allocated cap (from CAP_TIERS)
 uint32_t dropped();
+
+// size()/dropped()/state() are each independently lock-protected; a caller
+// reading more than one to build a single status report should use this
+// instead so all three reflect one consistent instant (see get_status()'s
+// definition for why the independent calls can't guarantee that).
+struct Status {
+    size_t   size;
+    uint32_t dropped;
+    State    state;
+};
+Status   get_status();
 
 // Downloads only permitted from STOPPED. read_chunk() takes the session
 // mutex per chunk and copies out of the live ring, presenting it as a linear

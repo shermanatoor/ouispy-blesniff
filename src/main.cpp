@@ -64,7 +64,13 @@ void led_task(void*) {
             // without pretending to gate anything.
             amber_until = now + 20;
         }
-        if (now < amber_until) {
+        // Signed-difference form, not `now < amber_until`: near the millis()
+        // wraparound (~49.7 days uptime) a plain unsigned compare can read
+        // false for one iteration even though amber_until is genuinely still
+        // in the future, skipping the flash. This form is correct across the
+        // wraparound as long as the true difference fits in int32_t (it's at
+        // most 20ms here).
+        if ((int32_t)(amber_until - now) > 0) {
             r = 30; g = 20; b = 0;
         }
 
@@ -176,18 +182,27 @@ void handle_serial_cmd(const String& raw) {
     String U = upper(body);
 
     if (U == "STATUS") {
+        // One snapshot, not four separate config::get() calls -- config.h's
+        // own doc comment on get() says as much: a concurrent write landing
+        // between separate calls could otherwise report a scan_win/scan_int
+        // pairing (or an ap_ssid) that never actually coexisted in cfg.
+        const config::Config c = config::get();
         IPAddress ip = WiFi.softAPIP();
         String apmac = WiFi.softAPmacAddress();
         char ssid_esc[33 * 6 + 1];   // worst case: every char becomes \u00XX
-        json_escape(config::get().ap_ssid, ssid_esc, sizeof(ssid_esc));
+        json_escape(c.ap_ssid, ssid_esc, sizeof(ssid_esc));
+        // One locked read for size/dropped/state together -- see
+        // session_pcap::get_status()'s definition for why three separate
+        // calls here could report a self-inconsistent composite.
+        const session_pcap::Status sess = session_pcap::get_status();
         Serial.printf("{\"scan_win\":%u,\"scan_int\":%u,\"ftmask\":\"0x%02x\","
             "\"total\":%u,\"pps\":%u,\"drop_pcap\":%u,\"drop_dash\":%u,\"drop_ws\":%u,\"fw\":\"%s\","
             "\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"ap_mac\":\"%s\",\"ap_stations\":%u,"
             "\"session_bytes\":%u,\"session_cap\":%u,\"session_drop\":%u,"
             "\"state\":\"%s\",\"psram_free\":%u,\"heap_free\":%u,\"reset\":\"%s\",\"fault\":\"%s\"}\n",
-            (unsigned)config::get().scan_window_ms,
-            (unsigned)config::get().scan_interval_ms,
-            (unsigned)config::get().ft_mask,
+            (unsigned)c.scan_window_ms,
+            (unsigned)c.scan_interval_ms,
+            (unsigned)c.ft_mask,
             (unsigned)scan::total_adverts(),
             (unsigned)scan::adverts_per_sec(),
             (unsigned)scan::dropped_pcap(),
@@ -196,10 +211,10 @@ void handle_serial_cmd(const String& raw) {
             config::FW_VERSION(),
             ssid_esc, ip.toString().c_str(), apmac.c_str(),
             (unsigned)WiFi.softAPgetStationNum(),
-            (unsigned)session_pcap::size(),
+            (unsigned)sess.size,
             (unsigned)session_pcap::capacity(),
-            (unsigned)session_pcap::dropped(),
-            session_pcap::state_name(),
+            (unsigned)sess.dropped,
+            session_pcap::state_name(sess.state),
             (unsigned)ESP.getFreePsram(),
             (unsigned)ESP.getFreeHeap(),
             reset_reason_name(),
@@ -222,11 +237,14 @@ void handle_serial_cmd(const String& raw) {
         config::set_scan_window((uint16_t)v);
         scan::apply_scan_params();
         // The window is capped at half the interval for Wi-Fi coexistence, so
-        // say what was stored rather than a bare OK that hides the clamp.
-        if (config::get().scan_window_ms != (uint16_t)v) {
+        // say what was stored rather than a bare OK that hides the clamp. One
+        // get() call, not two -- a second call here could race a concurrent
+        // config write and print a value unrelated to what this command set.
+        const uint16_t stored = config::get().scan_window_ms;
+        if (stored != (uint16_t)v) {
             char buf[64];
             int n = snprintf(buf, sizeof(buf), "OK window=%u (capped for AP coexistence)\n",
-                             (unsigned)config::get().scan_window_ms);
+                             (unsigned)stored);
             if (n > 0) Serial.write(buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
         } else {
             reply_ok();
@@ -236,9 +254,23 @@ void handle_serial_cmd(const String& raw) {
     if (U.startsWith("INTERVAL ")) {
         int v = U.substring(9).toInt();
         if (v < 20 || v > 4000) { reply_err("bad interval"); return; }
+        // set_scan_interval() re-derives and re-clamps the stored window
+        // against the new interval as a side effect (see config.cpp), so
+        // report it the same way WINDOW reports its own clamp -- a bare OK
+        // would silently hide a window change this command just caused.
+        const uint16_t win_before = config::get().scan_window_ms;
         config::set_scan_interval((uint16_t)v);
         scan::apply_scan_params();
-        reply_ok(); return;
+        const uint16_t win_after = config::get().scan_window_ms;
+        if (win_after != win_before) {
+            char buf[80];
+            int n = snprintf(buf, sizeof(buf), "OK window=%u (recalculated for AP coexistence)\n",
+                             (unsigned)win_after);
+            if (n > 0) Serial.write(buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
+        } else {
+            reply_ok();
+        }
+        return;
     }
     reply_err("unknown");
 }
@@ -287,20 +319,24 @@ void setup() {
     pixel.setPixelColor(0, 0);
     pixel.show();
 
-    if (!LittleFS.begin(true)) {
+    // Keep the first fault, not the last: each of these is checked
+    // unconditionally, and overwriting g_fault on a later failure would hide
+    // which subsystem actually failed first (often the root cause of the
+    // ones after it).
+    if (!LittleFS.begin(true) && g_fault == Fault::None) {
         g_fault = Fault::LittleFS;
     }
 
     config::load();
 
-    if (!wifi_ap_start()) {
+    if (!wifi_ap_start() && g_fault == Fault::None) {
         g_fault = Fault::Wifi;
     }
 
     session_pcap::init();
     web_dashboard::init();
 
-    if (!scan::init()) {
+    if (!scan::init() && g_fault == Fault::None) {
         g_fault = Fault::Scan;
     }
 
@@ -315,11 +351,11 @@ void setup() {
     // pcap_writer_task copies scan::Frame (~280B) into a stack local per pop;
     // 8KB is comfortable headroom.
     if (xTaskCreatePinnedToCore(&pcap_writer_task, "pcap_wr", 8192, nullptr, 5, &pcap_task_h, 0) != pdPASS) {
-        g_fault = Fault::Task;
+        if (g_fault == Fault::None) g_fault = Fault::Task;
         Serial.println(F("[boot] FATAL: failed to create pcap_writer_task -- capture pipeline is dead"));
     }
     if (xTaskCreatePinnedToCore(&led_task, "led", 2048, nullptr, 1, &led_task_h, 0) != pdPASS) {
-        g_fault = Fault::Task;
+        if (g_fault == Fault::None) g_fault = Fault::Task;
         Serial.println(F("[boot] FATAL: failed to create led_task"));
     }
 }

@@ -85,10 +85,15 @@ void send_status() {
     doc["dropped_pcap"] = scan::dropped_pcap();
     doc["dropped_dash"] = scan::dropped_dash();
     doc["dropped_ws"]   = g_ws_dropped;
-    doc["session_bytes"] = (uint32_t)session_pcap::size();
+    // One locked read for size/dropped/state together, not three independent
+    // ones -- pcap_writer_task could otherwise run a reclaim between them and
+    // this broadcast would show a byte count and drop count that never
+    // coexisted in the live session.
+    const session_pcap::Status sess = session_pcap::get_status();
+    doc["session_bytes"] = (uint32_t)sess.size;
     doc["session_cap"]   = (uint32_t)session_pcap::capacity();
-    doc["session_drop"]  = (uint32_t)session_pcap::dropped();
-    doc["state"]         = session_pcap::state_name();
+    doc["session_drop"]  = (uint32_t)sess.dropped;
+    doc["state"]         = session_pcap::state_name(sess.state);
     doc["psram_free"]    = (uint32_t)ESP.getFreePsram();
     doc["heap_free"]     = (uint32_t)ESP.getFreeHeap();
     doc["fw"] = config::FW_VERSION();

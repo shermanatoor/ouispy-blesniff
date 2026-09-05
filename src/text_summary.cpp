@@ -239,9 +239,16 @@ uint8_t traits(const scan::Frame& f) {
     if (f.ll_pdu_type == scan::LL_ADV_IND || f.ll_pdu_type == scan::LL_ADV_DIRECT_IND) {
         t |= TR_CONNECTABLE;
     }
-    for_each_ad(f, [&](uint8_t type, const uint8_t*, uint8_t) -> bool {
-        if (type == ad::COMPLETE_LOCAL_NAME || type == ad::SHORTENED_LOCAL_NAME) t |= TR_HAS_NAME;
-        if (type == ad::MANUFACTURER_SPECIFIC)                                    t |= TR_HAS_MFR;
+    for_each_ad(f, [&](uint8_t type, const uint8_t*, uint8_t dlen) -> bool {
+        // Gated on dlen, matching what extract_name()/manufacturer_id() will
+        // actually produce for this AD -- a zero-length name AD or a
+        // manufacturer AD with fewer than 2 data bytes sets the AD-type bit
+        // here but yields no name/mfr value there, which used to leave the
+        // dashboard's Has-name/Has-mfr filter chips matching adverts that
+        // display no name or manufacturer at all.
+        if ((type == ad::COMPLETE_LOCAL_NAME || type == ad::SHORTENED_LOCAL_NAME) && dlen >= 1)
+            t |= TR_HAS_NAME;
+        if (type == ad::MANUFACTURER_SPECIFIC && dlen >= 2) t |= TR_HAS_MFR;
         if (type == ad::SERVICE_DATA_16 || type == ad::SERVICE_DATA_32 ||
             type == ad::SERVICE_DATA_128)                                         t |= TR_HAS_SVC_DATA;
         return true;

@@ -1239,8 +1239,12 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       if (tr.style.display === 'none') return;
       const c = tr.children;
       const q = (s) => '"'+String(s||'').replace(/"/g,'""')+'"';
+      // c[6].textContent would include the vendor tag's own text (e.g.
+      // "RING") run together with the MAC, since the tag and the address are
+      // adjacent text nodes in the same cell with only a CSS margin between
+      // them. tr.dataset.addr holds the plain address on its own.
       lines.push([c[0].textContent, c[1].textContent, c[2].textContent, c[3].textContent,
-                  c[4].textContent, c[5].textContent, c[6].textContent,
+                  c[4].textContent, c[5].textContent, tr.dataset.addr || '',
                   q(c[7].textContent), q(c[8].textContent), q(c[9].textContent),
                   c[10].textContent].join(','));
     });
