@@ -12,3 +12,21 @@ immutable PSRAM snapshot which parses cleanly regardless of capture rate.
 
 USB CDC still emits human-readable text summaries (one line per advert) and
 responds to `CMD:STATUS` / `CMD:VERSION` for scripting.
+
+# Hardware acceptance tests
+
+`tools/hwtest/` holds two scripts that exercise a flashed device end to end.
+They need `pyserial` (bundled with PlatformIO).
+
+```bash
+python tools/hwtest/serial_test.py   # device on USB; ~15 s
+python tools/hwtest/http_test.py     # host joined to ouispy-blesniff; ~40 s
+```
+
+`serial_test.py` checks the USB text interface: CMD replies land as single
+intact lines, `CMD:STATUS` is one valid JSON object, and the pps counter holds
+up under polling. `http_test.py` walks the dashboard API -- POST error paths,
+window/interval clamping (including the Wi-Fi coexistence cap), AP credential
+validation, the Record/Pause/Resume/Stop state machine, a PCAP download that
+is parsed record by record, and finally `/api/reboot` with the serial port
+held open to confirm the reply arrives and the boot banner is contiguous.
