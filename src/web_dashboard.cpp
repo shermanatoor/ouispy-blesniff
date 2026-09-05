@@ -20,6 +20,10 @@ AsyncWebSocket   ws("/ws");
 TaskHandle_t     dash_task_h = nullptr;
 uint32_t         boot_ms = 0;
 
+// Adverts that made it off the ring but were thrown away because no client
+// could accept the batch. Written and read from the dashboard task only.
+uint32_t         g_ws_dropped = 0;
+
 // Deferred restart deadline in millis(), 0 when disarmed. ESP.restart() used to
 // run straight from the request callback after a delay(200): that blocks the
 // AsyncTCP task and tears the stack down while the response is still being
@@ -78,6 +82,7 @@ void send_status() {
     doc["total"]  = scan::total_adverts();
     doc["dropped_pcap"] = scan::dropped_pcap();
     doc["dropped_dash"] = scan::dropped_dash();
+    doc["dropped_ws"]   = g_ws_dropped;
     doc["session_bytes"] = (uint32_t)session_pcap::size();
     doc["session_cap"]   = (uint32_t)session_pcap::capacity();
     doc["session_drop"]  = (uint32_t)session_pcap::dropped();
@@ -88,7 +93,10 @@ void send_status() {
 
     char buf[512];
     size_t n = serializeJson(doc, buf, sizeof(buf));
-    ws.textAll(buf, n);
+    // Same guard as the packet batches: pushing into a full client queue
+    // makes AsyncWebSocket drop the message or the client, and a status tick
+    // is the least important thing to force through.
+    if (ws.availableForWriteAll()) ws.textAll(buf, n);
 }
 
 static constexpr size_t BATCH_CAP        = 8192;
@@ -100,8 +108,14 @@ void flush_batch(char* buf, size_t& pos, uint16_t& count) {
     if (count == 0) return;
     buf[pos++] = ']';
     buf[pos++] = '}';
-    if (ws.count() > 0 && ws.availableForWriteAll()) {
-        ws.textAll(buf, pos);
+    if (ws.count() > 0) {
+        if (ws.availableForWriteAll()) {
+            ws.textAll(buf, pos);
+        } else {
+            // Client queue full. These adverts are gone for the dashboard --
+            // say so instead of pretending the drop counters cover it.
+            g_ws_dropped += count;
+        }
     }
     pos = 0;
     count = 0;
@@ -386,6 +400,7 @@ void handle_session_pcap(AsyncWebServerRequest* req) {
 } // namespace
 
 uint32_t connected_clients() { return ws.count(); }
+uint32_t ws_dropped()        { return g_ws_dropped; }
 
 bool init() {
     boot_ms = millis();
