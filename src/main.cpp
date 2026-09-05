@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <driver/ledc.h>
 #include <esp_system.h>
 #include <ctype.h>
 
@@ -17,11 +16,8 @@
 
 namespace {
 
-constexpr uint8_t  PIN_BUZZER   = 3;
 constexpr uint8_t  PIN_NEOPIXEL = 21;
 constexpr uint8_t  PIN_BOOT     = 0;
-constexpr ledc_channel_t BUZZER_CH    = LEDC_CHANNEL_0;
-constexpr ledc_timer_t   BUZZER_TIMER = LEDC_TIMER_0;
 
 Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 
@@ -32,34 +28,6 @@ TaskHandle_t pcap_task_h = nullptr;
 TaskHandle_t led_task_h  = nullptr;
 
 volatile uint32_t last_advert_ms = 0;
-
-void buzzer_setup() {
-    ledc_timer_config_t t = {};
-    t.speed_mode      = LEDC_LOW_SPEED_MODE;
-    t.duty_resolution = LEDC_TIMER_10_BIT;
-    t.timer_num       = BUZZER_TIMER;
-    t.freq_hz         = 1500;
-    t.clk_cfg         = LEDC_AUTO_CLK;
-    ledc_timer_config(&t);
-
-    ledc_channel_config_t c = {};
-    c.gpio_num   = PIN_BUZZER;
-    c.speed_mode = LEDC_LOW_SPEED_MODE;
-    c.channel    = BUZZER_CH;
-    c.timer_sel  = BUZZER_TIMER;
-    c.duty       = 0;
-    c.hpoint     = 0;
-    ledc_channel_config(&c);
-}
-
-void buzzer_chirp(uint16_t freq, uint16_t ms) {
-    ledc_set_freq(LEDC_LOW_SPEED_MODE, BUZZER_TIMER, freq);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_CH, 512);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, BUZZER_CH);
-    delay(ms);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_CH, 0);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, BUZZER_CH);
-}
 
 void led_task(void*) {
     uint32_t last_pkt_seen = 0;
@@ -258,10 +226,6 @@ void boot_button_poll() {
         if (held_since == 0) held_since = millis();
         else if (millis() - held_since > 1500) {
             config::reset_defaults();
-            buzzer_chirp(1500, 60);
-            delay(60);
-            buzzer_chirp(1000, 60);
-            delay(200);
             ESP.restart();
         }
     } else {
@@ -287,8 +251,6 @@ void setup() {
     pixel.setPixelColor(0, 0);
     pixel.show();
 
-    buzzer_setup();
-
     if (!LittleFS.begin(true)) {
         g_fault = Fault::LittleFS;
     }
@@ -308,8 +270,6 @@ void setup() {
 
     // pcap_stream no longer needs init -- USB output is text-only, session
     // buffer for the dashboard is initialized separately.
-
-    if (g_fault == Fault::None) buzzer_chirp(1500, 40);
 
     // Print the banner before pcap_writer_task exists. scan::init() has already
     // started filling the ring, so starting the writer first let advert lines

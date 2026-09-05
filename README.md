@@ -73,7 +73,7 @@ Newline-terminated ASCII, prefix `CMD:`.
 
 | Pin | Function |
 |---|---|
-| GPIO 3 | Buzzer (PWM, optional beep on hit) |
+| GPIO 3 | Piezo buzzer (unused -- firmware never drives it) |
 | GPIO 21 | User LED (inverted logic — LOW = ON) |
 | GPIO 0 | BOOT button |
 
