@@ -194,7 +194,17 @@ void handle_serial_cmd(const String& raw) {
         if (v < 10 || v > 2000) { reply_err("bad window"); return; }
         config::set_scan_window((uint16_t)v);
         scan::apply_scan_params();
-        reply_ok(); return;
+        // The window is capped at half the interval for Wi-Fi coexistence, so
+        // say what was stored rather than a bare OK that hides the clamp.
+        if (config::get().scan_window_ms != (uint16_t)v) {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "OK window=%u (capped for AP coexistence)\n",
+                             (unsigned)config::get().scan_window_ms);
+            if (n > 0) Serial.write(buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
+        } else {
+            reply_ok();
+        }
+        return;
     }
     if (U.startsWith("INTERVAL ")) {
         int v = U.substring(9).toInt();

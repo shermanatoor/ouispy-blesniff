@@ -571,7 +571,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
         <input type="range" min="20" max="4000" step="10" value="100" id="scanInt"/>
         <span class="val" id="scanIntVal">100 ms</span>
       </div>
-      <div class="warn-banner" id="winWarn" style="display:none">Window must be &le; interval.</div>
+      <div class="warn-banner" id="winWarn" style="display:none">Window is capped at half the interval &mdash; the BLE scan and the Wi-Fi AP share one radio, and a wider window starves the AP until you factory-reset.</div>
     </section>
 
     <section>
@@ -1339,7 +1339,8 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     $('scanIntVal').textContent = $('scanInt').value + ' ms';
     const win = +$('scanWin').value;
     const intv = +$('scanInt').value;
-    $('winWarn').style.display = (win > intv) ? '' : 'none';
+    // Mirrors config::max_window_for() in the firmware.
+    $('winWarn').style.display = (win > Math.max(10, Math.floor(intv / 2))) ? '' : 'none';
   }
   $('scanWin').oninput = updateScanLabels;
   $('scanInt').oninput = updateScanLabels;
