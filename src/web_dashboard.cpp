@@ -43,7 +43,7 @@ size_t append_pkt_json(const scan::Frame& f, char* out, size_t cap) {
     text_summary::extract_name(f, name, sizeof(name));
     char svc[80]; svc[0] = 0;
     text_summary::extract_service_uuids(f, svc, sizeof(svc));
-    uint16_t mfr = text_summary::manufacturer_id(f);
+    int32_t  mfr = text_summary::manufacturer_id(f);
     uint8_t  tr  = text_summary::traits(f);
 
     StaticJsonDocument<512> doc;
@@ -59,11 +59,11 @@ size_t append_pkt_json(const scan::Frame& f, char* out, size_t cap) {
     doc["f"] = tr;                                   // traits bitfield
     if (name[0]) doc["n"] = name;
     if (svc[0])  doc["s"] = svc;
-    if (mfr != 0xFFFF) {
+    if (mfr >= 0) {
         char mbuf[16];
-        snprintf(mbuf, sizeof(mbuf), "%04X", mfr);
-        doc["u"] = mbuf;                             // mfr id hex
-        doc["v"] = text_summary::mfr_shortname(mfr); // mfr shortname
+        snprintf(mbuf, sizeof(mbuf), "%04X", (unsigned)mfr);
+        doc["u"] = mbuf;                                          // mfr id hex
+        doc["v"] = text_summary::mfr_shortname((uint16_t)mfr);    // mfr shortname
     }
 
     // One pass straight into the batch. serializeJson(doc, void*, size) does
@@ -442,7 +442,12 @@ bool init() {
 }
 
 void tick() {
-    ws.cleanupClients();
+    // cleanupClients() used to also run here on loopTask, racing dashboard_task's
+    // own cleanupClients()/count()/availableForWriteAll()/textAll() -- all of
+    // which walk the same AsyncWebSocket client list with no synchronization
+    // between tasks. dashboard_task already calls cleanupClients() once a
+    // second (see its loop below); leaving it there keeps every touch of `ws`
+    // confined to that one task instead of two.
     const uint32_t at = g_restart_at;
     if (at && (int32_t)(millis() - at) >= 0) {
         Serial.flush();

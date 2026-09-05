@@ -21,8 +21,19 @@ constexpr uint8_t  PIN_BOOT     = 0;
 
 Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 
-enum class Fault { None, LittleFS, Wifi, Scan };
+enum class Fault { None, LittleFS, Wifi, Scan, Task };
 volatile Fault g_fault = Fault::None;
+
+const char* fault_name() {
+    switch (g_fault) {
+        case Fault::None:     return "none";
+        case Fault::LittleFS: return "littlefs";
+        case Fault::Wifi:     return "wifi";
+        case Fault::Scan:     return "scan";
+        case Fault::Task:     return "task";
+    }
+    return "?";
+}
 
 TaskHandle_t pcap_task_h = nullptr;
 TaskHandle_t led_task_h  = nullptr;
@@ -135,6 +146,28 @@ void reply_err(const char* m) {
     Serial.write(buf, (size_t)n);
 }
 
+// config::get().ap_ssid is user-controlled (POST /api/ap) and reaches CMD:STATUS's
+// JSON reply as a bare %s with no quoting. A stored '"' or control character (both
+// legal after ArduinoJson decodes the POST body's JSON escapes) would otherwise
+// terminate the string early or split the reply across physical serial lines.
+void json_escape(const char* src, char* out, size_t out_sz) {
+    size_t o = 0;
+    for (const char* p = src; *p && o + 1 < out_sz; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') {
+            if (o + 2 >= out_sz) break;
+            out[o++] = '\\';
+            out[o++] = (char)c;
+        } else if (c < 0x20) {
+            if (o + 6 >= out_sz) break;
+            o += snprintf(out + o, 7, "\\u%04x", c);
+        } else {
+            out[o++] = (char)c;
+        }
+    }
+    out[o] = 0;
+}
+
 void handle_serial_cmd(const String& raw) {
     String line = raw; line.trim();
     if (!line.startsWith("CMD:") && !line.startsWith("cmd:")) return;
@@ -145,11 +178,13 @@ void handle_serial_cmd(const String& raw) {
     if (U == "STATUS") {
         IPAddress ip = WiFi.softAPIP();
         String apmac = WiFi.softAPmacAddress();
+        char ssid_esc[33 * 6 + 1];   // worst case: every char becomes \u00XX
+        json_escape(config::get().ap_ssid, ssid_esc, sizeof(ssid_esc));
         Serial.printf("{\"scan_win\":%u,\"scan_int\":%u,\"ftmask\":\"0x%02x\","
             "\"total\":%u,\"pps\":%u,\"drop_pcap\":%u,\"drop_dash\":%u,\"drop_ws\":%u,\"fw\":\"%s\","
             "\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"ap_mac\":\"%s\",\"ap_stations\":%u,"
             "\"session_bytes\":%u,\"session_cap\":%u,\"session_drop\":%u,"
-            "\"state\":\"%s\",\"psram_free\":%u,\"heap_free\":%u,\"reset\":\"%s\"}\n",
+            "\"state\":\"%s\",\"psram_free\":%u,\"heap_free\":%u,\"reset\":\"%s\",\"fault\":\"%s\"}\n",
             (unsigned)config::get().scan_window_ms,
             (unsigned)config::get().scan_interval_ms,
             (unsigned)config::get().ft_mask,
@@ -159,7 +194,7 @@ void handle_serial_cmd(const String& raw) {
             (unsigned)scan::dropped_dash(),
             (unsigned)web_dashboard::ws_dropped(),
             config::FW_VERSION(),
-            config::get().ap_ssid, ip.toString().c_str(), apmac.c_str(),
+            ssid_esc, ip.toString().c_str(), apmac.c_str(),
             (unsigned)WiFi.softAPgetStationNum(),
             (unsigned)session_pcap::size(),
             (unsigned)session_pcap::capacity(),
@@ -167,7 +202,8 @@ void handle_serial_cmd(const String& raw) {
             session_pcap::state_name(),
             (unsigned)ESP.getFreePsram(),
             (unsigned)ESP.getFreeHeap(),
-            reset_reason_name());
+            reset_reason_name(),
+            fault_name());
         return;
     }
     if (U == "VERSION") {
@@ -278,8 +314,14 @@ void setup() {
 
     // pcap_writer_task copies scan::Frame (~280B) into a stack local per pop;
     // 8KB is comfortable headroom.
-    xTaskCreatePinnedToCore(&pcap_writer_task, "pcap_wr", 8192, nullptr, 5, &pcap_task_h, 0);
-    xTaskCreatePinnedToCore(&led_task,         "led",     2048, nullptr, 1, &led_task_h,  0);
+    if (xTaskCreatePinnedToCore(&pcap_writer_task, "pcap_wr", 8192, nullptr, 5, &pcap_task_h, 0) != pdPASS) {
+        g_fault = Fault::Task;
+        Serial.println(F("[boot] FATAL: failed to create pcap_writer_task -- capture pipeline is dead"));
+    }
+    if (xTaskCreatePinnedToCore(&led_task, "led", 2048, nullptr, 1, &led_task_h, 0) != pdPASS) {
+        g_fault = Fault::Task;
+        Serial.println(F("[boot] FATAL: failed to create led_task"));
+    }
 }
 
 void loop() {

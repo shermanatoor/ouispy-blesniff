@@ -222,9 +222,27 @@ void append(const scan::Frame& f) {
     xSemaphoreGive(g_lock);
 }
 
-size_t   size()      { return GLOBAL_HDR_LEN + g_data; }
-size_t   capacity()  { return g_cap; }
-uint32_t dropped()   { return g_dropped; }
+// g_cap is set once in init() and never mutated again, so it needs no lock.
+// g_data/g_dropped are mutated under g_lock by append()/reclaim_locked() on
+// pcap_writer_task while a session is RECORDING; reading them without the
+// lock (as this used to) could sample the two mid-update from another task
+// (the dashboard status broadcast, or a serial CMD:STATUS), reporting a
+// self-inconsistent snapshot.
+size_t size() {
+    if (!g_lock) return GLOBAL_HDR_LEN;
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    size_t n = GLOBAL_HDR_LEN + g_data;
+    xSemaphoreGive(g_lock);
+    return n;
+}
+size_t capacity() { return g_cap; }
+uint32_t dropped() {
+    if (!g_lock) return 0;
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    uint32_t d = g_dropped;
+    xSemaphoreGive(g_lock);
+    return d;
+}
 
 size_t read_chunk(size_t offset, uint8_t* out, size_t len) {
     if (!g_buf || !g_lock) return 0;

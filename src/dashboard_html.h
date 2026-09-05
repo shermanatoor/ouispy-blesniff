@@ -514,6 +514,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<meta charset="utf-8">
     .rail.open { transform: translateX(0); }
     .footer { flex-wrap: wrap; font-size: 10px; padding: 4px 8px; }
     .btn { padding: 8px 12px; }
+    .hide-sm { display: none; }
   }
   @media (max-width: 420px) {
     .status { grid-template-columns: repeat(2, auto); }
@@ -1036,6 +1037,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     if (counted) tr_el.classList.add('hit');
     tr_el.dataset.keys  = [...keys].join(' ');
     tr_el.dataset.hit   = counted ? '1' : '0';
+    tr_el.dataset.vendorId = counted ? vend.id : '';
     tr_el.dataset.weak  = (vend && weak) ? '1' : '0';
     tr_el.dataset.addr = addr.toLowerCase();
     tr_el.dataset.name = name.toLowerCase();
@@ -1058,8 +1060,35 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       '<td class="mac hide-sm">'+escapeHtml(mfrDisplay)+'</td>'+
       '<td class="right">'+p.l+'</td>';
     rows.appendChild(tr_el);
-    while (rows.childElementCount > MAX_ROWS) rows.removeChild(rows.firstChild);
+    while (rows.childElementCount > MAX_ROWS) evictOldestRow();
     applyRowFilter(tr_el, flt);
+  }
+
+  // Undo exactly what pushPacket() counted for this row when it was added,
+  // so chip/hit/vendor badges stay in sync with what's actually still in the
+  // table instead of climbing forever as old rows scroll out of the MAX_ROWS
+  // window.
+  function evictOldestRow() {
+    const old = rows.firstChild;
+    if (!old) return;
+    if (old.dataset) {
+      (old.dataset.keys ? old.dataset.keys.split(' ') : []).forEach(k => {
+        if (!k || !chipCounts[k]) return;
+        chipCounts[k]--;
+        const el = $('c-' + k);
+        if (el) el.textContent = chipCounts[k];
+      });
+      if (old.dataset.hit === '1') {
+        if (hits > 0) { hits--; $('statHits').textContent = hits; }
+        const vid = old.dataset.vendorId;
+        if (vid && vendorHitCounts[vid]) {
+          vendorHitCounts[vid]--;
+          const vEl = $('count-' + vid);
+          if (vEl) vEl.textContent = vendorHitCounts[vid];
+        }
+      }
+    }
+    rows.removeChild(old);
   }
 
   // --- Follow (auto-scroll) --------------------------------------------

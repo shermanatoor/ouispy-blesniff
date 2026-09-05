@@ -51,7 +51,9 @@ struct Config {
 void        load();
 void        save();
 void        reset_defaults();
-Config&     get();
+// Returns a snapshot copy, not a reference -- cfg is shared across the NimBLE,
+// AsyncTCP and loop tasks, so every call gets an internally-consistent view.
+Config      get();
 
 void set_scan_window(uint16_t ms);
 void set_scan_interval(uint16_t ms);

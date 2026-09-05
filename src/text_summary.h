@@ -10,7 +10,11 @@ const char* addr_type_short(uint8_t addr_type);
 
 void        format_addr(const uint8_t addr[6], char* out18);
 void        extract_name(const scan::Frame& f, char* out, size_t out_sz);
-uint16_t    manufacturer_id(const scan::Frame& f);  // returns 0xFFFF if absent
+// Returns the 16-bit Bluetooth SIG company ID, or -1 if no manufacturer AD is
+// present. int32_t (not uint16_t) because 0xFFFF is itself a value a real or
+// malformed advert can legitimately carry on the wire, so it cannot double as
+// the "absent" sentinel without colliding with that case.
+int32_t     manufacturer_id(const scan::Frame& f);
 const char* mfr_shortname(uint16_t id);
 
 // Fill `svc_out` with comma-joined 16-bit service UUID hex values ("0xFFE0,0x180F").
