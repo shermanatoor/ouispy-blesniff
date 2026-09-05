@@ -53,3 +53,21 @@ and unattributed prefixes seen on the vendor's hardware. A `ouisBroad`-only
 match renders as `FLOCK?` with a dashed border and does not count as a hit when
 **Confident only** is ticked, because an Espressif or Liteon OUI is shared with
 every unrelated device built on the same module.
+
+# Host-side unit tests
+
+`tools/hosttest/` builds a few `src/*.cpp` files' pure parsing logic against a
+minimal Arduino stand-in (`tools/hosttest/stub/Arduino.h`) and runs them on the
+host -- no board needed. Useful for anything that only touches buffers, not
+peripherals. Requires a C++17 compiler (MinGW-w64 via `scoop install gcc`, or
+any g++/clang++ on PATH).
+
+```bash
+g++ -std=c++17 -I tools/hosttest/stub -o tools/hosttest/test_text_summary tools/hosttest/test_text_summary.cpp
+./tools/hosttest/test_text_summary
+```
+
+`test_text_summary.cpp` covers `text_summary.cpp`'s AD-structure parsing:
+16/32/128-bit and Service-Data service UUIDs (including reduction to the short
+form, non-reduction of a genuinely custom 128-bit UUID, and de-duplication
+across encodings), and complete-vs-shortened local name precedence.

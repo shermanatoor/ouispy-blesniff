@@ -10,3 +10,4 @@ build/
 firmware/build/
 tools/hwtest/crash_probe.log
 .ids-cache/
+*.exe
