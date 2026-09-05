@@ -851,6 +851,8 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     else if (y === 'SCAN_REQ')      { keys.push('scan_req');    cls = 't-scan-req'; }
     else if (y === 'SCAN_RSP')      { keys.push('scan_rsp');    cls = 't-scan-rsp'; }
     else if (y === 'CONNECT_REQ')   { keys.push('connect_req'); cls = 't-connect-req'; }
+    // Catch-all. Firmware sends "ADV_?" for an HCI advert type it cannot map
+    // to a legacy LL PDU type (extended advertising, mostly).
     else                            { keys.push('extended');    cls = 't-extended'; }
     return { keys, cls };
   }

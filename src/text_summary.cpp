@@ -33,6 +33,7 @@ const char* ll_type_name(uint8_t t) {
         case scan::LL_SCAN_RSP:        return "SCAN_RSP";
         case scan::LL_CONNECT_IND:     return "CONNECT_REQ";
         case scan::LL_ADV_SCAN_IND:    return "ADV_SCAN";
+        // scan::LL_UNKNOWN lands here, as does any value we never emit.
         default:                       return "ADV_?";
     }
 }

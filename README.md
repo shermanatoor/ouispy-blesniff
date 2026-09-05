@@ -15,7 +15,7 @@ Sister firmware to [ouispy-pcap](https://github.com/colonelpanichacks/ouispy-pca
 - NimBLE passive scan across 37/38/39, complete PDU capture with RSSI
 - **USB-CDC text summary** — human-readable one-liner per advert (scriptable)
 - **On-device dashboard** on `ouispy-blesniff` / `sniffuntothem` at `192.168.4.1` — live advert table, filter chips, session PCAP download (Wireshark-ready `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` / 256)
-- **Chip filters**: advertising type (ADV_IND / ADV_NONCONN / ADV_SCAN / SCAN_REQ / SCAN_RSP / CONNECT_REQ / EXTENDED), traits (name-present / mfr-data / service-data), vendor identify against the OUI Database (RING, AXON, FLOCK SAFETY, DJI, PARROT, SKYDIO, META/RAY-BAN)
+- **Chip filters**: advertising type, traits (name-present / mfr-data / service-data), vendor identify against the OUI Database (RING, AXON, FLOCK SAFETY, DJI, PARROT, SKYDIO, META/RAY-BAN). The ESP32 HCI advertising report only exposes ADV_IND / ADV_DIRECT / ADV_NONCONN / ADV_SCAN / SCAN_RSP, so the SCAN_REQ and CONNECT_REQ chips are present for completeness and stay at zero on this hardware; EXTENDED catches any advert type the firmware cannot map to a legacy PDU type
 - **Server-side PSRAM session buffer** (tries 6 MB, falls back to 4 MB, then 2 MB — auto-selected at boot) with an explicit **Record / Pause / Stop / Save** state machine on the dashboard. Boots IDLE; capture only begins after you click RECORD. Download via `GET /api/session.pcap` is enabled from STOPPED only.
 - Configurable scan window / interval from the dashboard, filters persist to NVS
 

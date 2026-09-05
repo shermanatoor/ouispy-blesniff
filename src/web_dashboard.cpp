@@ -20,6 +20,18 @@ AsyncWebSocket   ws("/ws");
 TaskHandle_t     dash_task_h = nullptr;
 uint32_t         boot_ms = 0;
 
+// Deferred restart deadline in millis(), 0 when disarmed. ESP.restart() used to
+// run straight from the request callback after a delay(200): that blocks the
+// AsyncTCP task and tears the stack down while the response is still being
+// flushed, so the client often never saw its 200. tick() runs it from loop()
+// instead, once AsyncTCP has had a chance to send.
+volatile uint32_t g_restart_at = 0;
+
+void schedule_restart(uint32_t in_ms) {
+    uint32_t at = millis() + in_ms;
+    g_restart_at = at ? at : 1;      // 0 means "disarmed"
+}
+
 size_t append_pkt_json(const scan::Frame& f, char* out, size_t cap) {
     char addr[18];
     text_summary::format_addr(f.addr, addr);
@@ -273,15 +285,13 @@ void handle_post_ap(AsyncWebServerRequest* req) {
 
 void handle_reboot(AsyncWebServerRequest* req) {
     req->send(200, "application/json", "{\"ok\":true}");
-    delay(200);
-    ESP.restart();
+    schedule_restart(400);
 }
 
 void handle_reset(AsyncWebServerRequest* req) {
     config::reset_defaults();
     req->send(200, "application/json", "{\"ok\":true}");
-    delay(200);
-    ESP.restart();
+    schedule_restart(400);
 }
 
 void handle_clear(AsyncWebServerRequest* req) {
@@ -353,14 +363,17 @@ void handle_session_pcap(AsyncWebServerRequest* req) {
     }
 
     session_pcap::download_begin();
+    // Balance the counter on disconnect, not on the chunk callback returning 0:
+    // a client that aborts mid-download never reaches that final call, so the
+    // in-flight count only ever climbed. onDisconnect fires exactly once per
+    // request, on both clean completion and abort.
+    req->onDisconnect([]() { session_pcap::download_end(); });
     AsyncWebServerResponse* r = req->beginChunkedResponse(
         "application/vnd.tcpdump.pcap",
         [](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
             constexpr size_t CHUNK = 4096;
             size_t want = maxLen < CHUNK ? maxLen : CHUNK;
-            size_t got = session_pcap::read_chunk(index, buf, want);
-            if (got == 0) session_pcap::download_end();
-            return got;
+            return session_pcap::read_chunk(index, buf, want);
         });
     char filename[64];
     snprintf(filename, sizeof(filename), "attachment; filename=\"ouispy-blesniff-%lu.pcap\"",
@@ -405,6 +418,11 @@ bool init() {
 
 void tick() {
     ws.cleanupClients();
+    const uint32_t at = g_restart_at;
+    if (at && (int32_t)(millis() - at) >= 0) {
+        Serial.flush();
+        ESP.restart();
+    }
 }
 
 } // namespace web_dashboard
