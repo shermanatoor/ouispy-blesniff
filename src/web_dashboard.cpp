@@ -20,6 +20,18 @@ AsyncWebSocket   ws("/ws");
 TaskHandle_t     dash_task_h = nullptr;
 uint32_t         boot_ms = 0;
 
+// Deferred restart deadline in millis(), 0 when disarmed. ESP.restart() used to
+// run straight from the request callback after a delay(200): that blocks the
+// AsyncTCP task and tears the stack down while the response is still being
+// flushed, so the client often never saw its 200. tick() runs it from loop()
+// instead, once AsyncTCP has had a chance to send.
+volatile uint32_t g_restart_at = 0;
+
+void schedule_restart(uint32_t in_ms) {
+    uint32_t at = millis() + in_ms;
+    g_restart_at = at ? at : 1;      // 0 means "disarmed"
+}
+
 size_t append_pkt_json(const scan::Frame& f, char* out, size_t cap) {
     char addr[18];
     text_summary::format_addr(f.addr, addr);
@@ -51,7 +63,9 @@ size_t append_pkt_json(const scan::Frame& f, char* out, size_t cap) {
     }
 
     size_t n = measureJson(doc);
-    if (n + 2 > cap) return 0;
+    // serializeJson(doc, void*, size) does not NUL-terminate, so `cap` is the
+    // exact byte budget. Separator + closing "]}" are reserved by the caller.
+    if (n > cap) return 0;
     return serializeJson(doc, out, cap);
 }
 
@@ -106,28 +120,44 @@ void dashboard_task(void*) {
     uint16_t count = 0;
     begin_batch(batch, pos);
 
+    // A frame popped off the ring but not yet serialized, because it did not
+    // fit in the batch being built. It survives across iterations so a full
+    // batch costs one extra flush instead of a silently discarded advert.
+    scan::Frame carry;
+    bool carried = false;
+
     for (;;) {
-        scan::Frame f;
         int drained = 0;
-        while (drained < MAX_DRAIN_PER_TICK && scan::pop_dashboard(&f)) {
-            if (count > 0) {
-                if (pos + 1 >= BATCH_CAP) break;
-                batch[pos++] = ',';
+        while (drained < MAX_DRAIN_PER_TICK) {
+            if (!carried) {
+                if (!scan::pop_dashboard(&carry)) break;
+                carried = true;
             }
-            size_t n = append_pkt_json(f, batch + pos, BATCH_CAP - pos - 2);
+            // Reserve the separator plus the two closing bytes ("]}") that
+            // flush_batch appends, so the batch can always be terminated.
+            const size_t sep   = (count > 0) ? 1 : 0;
+            const size_t fixed = pos + sep + 2;
+            const size_t avail = (fixed < BATCH_CAP) ? (BATCH_CAP - fixed) : 0;
+            const size_t n = avail ? append_pkt_json(carry, batch + pos + sep, avail) : 0;
             if (n == 0) {
-                if (count > 0) pos--;
-                break;
+                // Will never fit in an empty batch, so drop it rather than
+                // spin forever on the same frame.
+                if (count == 0) { carried = false; drained++; continue; }
+                break;                       // flush below, retry next pass
             }
-            pos += n;
+            if (sep) batch[pos] = ',';
+            pos += sep + n;
             count++;
             drained++;
+            carried = false;
             if (pos >= BATCH_FLUSH_WATER) break;
         }
 
         uint32_t now = millis();
         bool tick_expired = (now - last_flush) >= BATCH_TICK_MS;
-        if (count > 0 && (tick_expired || pos >= BATCH_FLUSH_WATER)) {
+        // `carried` here means the batch is too full for the next frame, so
+        // flush now regardless of the tick.
+        if (count > 0 && (tick_expired || carried || pos >= BATCH_FLUSH_WATER)) {
             flush_batch(batch, pos, count);
             begin_batch(batch, pos);
             last_flush = now;
@@ -155,63 +185,113 @@ void handle_get_config(AsyncWebServerRequest* req) {
     req->send(200, "application/json", body);
 }
 
-bool accumulate_body(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
-    if (total == 0 || total > 8192) return false;
+// JSON POST bodies arrive in chunks, stashed in req->_tempObject (freed by
+// ~AsyncWebServerRequest). The buffer is one byte longer than the body and
+// zero-filled, so it is always a valid NUL-terminated string: this fork of
+// AsyncWebServerRequest has no "bytes received" field, and the terminator is
+// what makes a short or truncated body fail as invalid JSON rather than get
+// parsed out of uninitialized heap.
+//
+// The reply is sent from onRequest, never from this callback. ESPAsyncWebServer
+// always invokes onRequest once a request completes, but invokes the body
+// callback only when there *is* a body -- replying from the body callback left
+// an empty or over-long POST with no response at all, hanging the client until
+// it timed out.
+constexpr size_t MAX_BODY = 8192;
+
+void accumulate_body(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                     size_t index, size_t total) {
+    if (total == 0 || total > MAX_BODY) return;
+    if (index > total || len > total - index) return;   // malformed / over-long chunk
     if (index == 0 && req->_tempObject == nullptr) {
-        req->_tempObject = malloc(total);
+        req->_tempObject = calloc(total + 1, 1);
     }
-    if (req->_tempObject == nullptr) return false;
+    if (req->_tempObject == nullptr) return;
     memcpy((uint8_t*)req->_tempObject + index, data, len);
-    return (index + len) >= total;
 }
 
-void handle_post_config(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
-    if (!accumulate_body(req, data, len, index, total)) return;
+// Returns the accumulated body as a NUL-terminated string, or nullptr after
+// replying 400 when the request carried no body or an over-long one.
+const char* body_or_fail(AsyncWebServerRequest* req) {
+    if (req->_tempObject == nullptr) {
+        req->send(400, "application/json", "{\"error\":\"empty or oversized body\"}");
+        return nullptr;
+    }
+    return (const char*)req->_tempObject;
+}
+
+void handle_post_config(AsyncWebServerRequest* req) {
+    const char* body = body_or_fail(req);
+    if (!body) return;
+
     StaticJsonDocument<640> doc;
-    DeserializationError err = deserializeJson(doc, (const uint8_t*)req->_tempObject, total);
+    DeserializationError err = deserializeJson(doc, body);
     if (err) { req->send(400, "application/json", "{\"error\":\"json\"}"); return; }
 
-    bool need_apply_scan = false;
-
-    if (doc.containsKey("scan_win")) {
-        uint16_t v = doc["scan_win"];
-        if (v != config::get().scan_window_ms) { config::set_scan_window(v); need_apply_scan = true; }
-    }
-    if (doc.containsKey("scan_int")) {
-        uint16_t v = doc["scan_int"];
-        if (v != config::get().scan_interval_ms) { config::set_scan_interval(v); need_apply_scan = true; }
+    // Window and interval have to be applied together. Applying them one at a
+    // time clamps the new window against the *old* interval, which silently
+    // swallows a window increase: 30/100 -> 200/400 would land on 100/400.
+    const bool has_win = doc.containsKey("scan_win");
+    const bool has_int = doc.containsKey("scan_int");
+    if (has_win || has_int) {
+        uint16_t win = has_win ? (uint16_t)doc["scan_win"] : config::get().scan_window_ms;
+        uint16_t itv = has_int ? (uint16_t)doc["scan_int"] : config::get().scan_interval_ms;
+        if (win != config::get().scan_window_ms || itv != config::get().scan_interval_ms) {
+            config::set_scan_params(win, itv);
+            scan::apply_scan_params();
+        }
     }
     if (doc.containsKey("ftmask")) {
         uint8_t m = doc["ftmask"];
-        if (m != config::get().ft_mask) { config::set_ftmask(m); }
+        if (m != config::get().ft_mask) config::set_ftmask(m);
     }
 
-    if (need_apply_scan) scan::apply_scan_params();
-
-    req->send(200, "application/json", "{\"ok\":true}");
+    // Echo what was actually stored -- the values may have been clamped.
+    char out[96];
+    snprintf(out, sizeof(out),
+             "{\"ok\":true,\"scan_win\":%u,\"scan_int\":%u,\"ftmask\":%u}",
+             (unsigned)config::get().scan_window_ms,
+             (unsigned)config::get().scan_interval_ms,
+             (unsigned)config::get().ft_mask);
+    req->send(200, "application/json", out);
 }
 
-void handle_post_ap(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
-    if (!accumulate_body(req, data, len, index, total)) return;
+void handle_post_ap(AsyncWebServerRequest* req) {
+    const char* body = body_or_fail(req);
+    if (!body) return;
+
     StaticJsonDocument<256> doc;
-    if (deserializeJson(doc, (const uint8_t*)req->_tempObject, total)) { req->send(400); return; }
+    if (deserializeJson(doc, body)) {
+        req->send(400, "application/json", "{\"error\":\"json\"}");
+        return;
+    }
     const char* ssid = doc["ssid"] | "";
     const char* pass = doc["pass"] | "";
+    // Reject rather than silently keeping the old credentials: the dashboard
+    // reboots the device on a 200, so a silent no-op looked like a successful
+    // change that had in fact never been applied.
+    const size_t sl = strlen(ssid), pl = strlen(pass);
+    if (sl == 0 || sl > 32) {
+        req->send(400, "application/json", "{\"error\":\"ssid must be 1-32 chars\"}");
+        return;
+    }
+    if (pl < 8 || pl > 63) {
+        req->send(400, "application/json", "{\"error\":\"password must be 8-63 chars\"}");
+        return;
+    }
     config::set_ap(ssid, pass);
     req->send(200, "application/json", "{\"ok\":true}");
 }
 
 void handle_reboot(AsyncWebServerRequest* req) {
     req->send(200, "application/json", "{\"ok\":true}");
-    delay(200);
-    ESP.restart();
+    schedule_restart(400);
 }
 
 void handle_reset(AsyncWebServerRequest* req) {
     config::reset_defaults();
     req->send(200, "application/json", "{\"ok\":true}");
-    delay(200);
-    ESP.restart();
+    schedule_restart(400);
 }
 
 void handle_clear(AsyncWebServerRequest* req) {
@@ -283,14 +363,17 @@ void handle_session_pcap(AsyncWebServerRequest* req) {
     }
 
     session_pcap::download_begin();
+    // Balance the counter on disconnect, not on the chunk callback returning 0:
+    // a client that aborts mid-download never reaches that final call, so the
+    // in-flight count only ever climbed. onDisconnect fires exactly once per
+    // request, on both clean completion and abort.
+    req->onDisconnect([]() { session_pcap::download_end(); });
     AsyncWebServerResponse* r = req->beginChunkedResponse(
         "application/vnd.tcpdump.pcap",
         [](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
             constexpr size_t CHUNK = 4096;
             size_t want = maxLen < CHUNK ? maxLen : CHUNK;
-            size_t got = session_pcap::read_chunk(index, buf, want);
-            if (got == 0) session_pcap::download_end();
-            return got;
+            return session_pcap::read_chunk(index, buf, want);
         });
     char filename[64];
     snprintf(filename, sizeof(filename), "attachment; filename=\"ouispy-blesniff-%lu.pcap\"",
@@ -313,10 +396,8 @@ bool init() {
         req->send(r);
     });
     server.on("/api/config", HTTP_GET, handle_get_config);
-    server.on("/api/config", HTTP_POST,
-        [](AsyncWebServerRequest* req){}, nullptr, handle_post_config);
-    server.on("/api/ap", HTTP_POST,
-        [](AsyncWebServerRequest* req){}, nullptr, handle_post_ap);
+    server.on("/api/config", HTTP_POST, handle_post_config, nullptr, accumulate_body);
+    server.on("/api/ap",     HTTP_POST, handle_post_ap,     nullptr, accumulate_body);
     server.on("/api/reboot", HTTP_POST, handle_reboot);
     server.on("/api/reset", HTTP_POST, handle_reset);
     server.on("/api/clear", HTTP_POST, handle_clear);
@@ -337,6 +418,11 @@ bool init() {
 
 void tick() {
     ws.cleanupClients();
+    const uint32_t at = g_restart_at;
+    if (at && (int32_t)(millis() - at) >= 0) {
+        Serial.flush();
+        ESP.restart();
+    }
 }
 
 } // namespace web_dashboard

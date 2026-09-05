@@ -5,6 +5,14 @@ namespace nordic_pcap {
 size_t build_frame(const scan::Frame& f, uint8_t* out) {
     uint8_t* p = out;
 
+    // The legacy advertising PDU length field covers AdvA + AdvData and is 6
+    // bits wide, so the payload cannot exceed MAX_ADV_DATA. Masking an
+    // over-long length (as this used to) wraps it to a small bogus value and
+    // Wireshark then mis-dissects the record. Truncate instead -- a short
+    // packet with a correct length beats a full one with a lying header.
+    uint16_t payload_len = f.payload_len;
+    if (payload_len > MAX_ADV_DATA) payload_len = MAX_ADV_DATA;
+
     // -------- 10-byte LE-LL-WITH-PHDR pseudo-header --------
     // Byte 0: RF channel index (0..39). 0xFF means unknown; Wireshark tolerates
     // any value in the 0..39 range, so map unknown to 39 (a valid adv channel).
@@ -38,7 +46,7 @@ size_t build_frame(const scan::Frame& f, uint8_t* out) {
     if (tx_random) hdr0 |= 0x40;
     if (f.ll_pdu_type == scan::LL_ADV_DIRECT_IND) hdr0 |= 0x80;
     // Byte 1: length in low 6 bits (address + AdvData)
-    uint8_t len_field = (uint8_t)((6 + f.payload_len) & 0x3F);
+    uint8_t len_field = (uint8_t)((ADV_ADDR_LEN + payload_len) & 0x3F);
     *p++ = hdr0;
     *p++ = len_field;
 
@@ -50,9 +58,9 @@ size_t build_frame(const scan::Frame& f, uint8_t* out) {
     for (int i = 0; i < 6; ++i) *p++ = f.addr[i];
 
     // -------- AdvData --------
-    if (f.payload_len) {
-        memcpy(p, f.payload, f.payload_len);
-        p += f.payload_len;
+    if (payload_len) {
+        memcpy(p, f.payload, payload_len);
+        p += payload_len;
     }
 
     // -------- 3-byte CRC (synthesized zero — we don't have the real one) --------

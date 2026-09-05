@@ -24,6 +24,10 @@ constexpr size_t CRC_LEN          = 3;
 constexpr size_t FRAME_OVERHEAD =
     PHDR_LEN + ACCESS_ADDR_LEN + LL_HDR_LEN + ADV_ADDR_LEN + CRC_LEN;
 
+// The advertising PDU header length field is 6 bits and covers AdvA (6 bytes)
+// plus AdvData, so AdvData tops out here. build_frame() truncates to it.
+constexpr uint16_t MAX_ADV_DATA = 0x3F - ADV_ADDR_LEN;   // 57
+
 constexpr uint32_t PCAP_MAGIC        = 0xA1B2C3D4;
 constexpr uint16_t PCAP_VER_MAJOR    = 2;
 constexpr uint16_t PCAP_VER_MINOR    = 4;
@@ -51,9 +55,10 @@ constexpr uint16_t PHDR_FLAGS        = 0x0013;
 // Returns bytes written.
 size_t build_frame(const scan::Frame& f, uint8_t* out);
 
-// Convenience: the total serialized size for a Frame.
+// Convenience: the total serialized size for a Frame (post-truncation).
 inline size_t frame_size(const scan::Frame& f) {
-    return FRAME_OVERHEAD + f.payload_len;
+    return FRAME_OVERHEAD +
+           (f.payload_len > MAX_ADV_DATA ? MAX_ADV_DATA : f.payload_len);
 }
 
 } // namespace nordic_pcap
