@@ -48,6 +48,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<meta charset="utf-8">
     --v-skydio:  #56d4dd;
     --v-meta:    #d29922;
   }
+  .tag.vendor.weak { opacity: .62; border-style: dashed; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
     margin: 0; padding: 0;
@@ -729,6 +730,8 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
           <div class="trail">
             <input type="checkbox" id="hitsOnly" />
             <label for="hitsOnly">Hits only</label>
+            <input type="checkbox" id="confidentOnly" />
+            <label for="confidentOnly" title="Ignore matches that only hit a radio-module OUI (Espressif, Liteon...) rather than the vendor itself">Confident only</label>
             <button class="chip clear" id="clearChipsBtn">Clear all</button>
           </div>
         </div>
@@ -783,12 +786,12 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   // Add to either; do not prune "observed" entries for failing the registry.
   const VENDORS = [
     { id:'ring',   name:'RING',   color:'var(--v-ring)',
+      // registry: Ring Solutions, Ring LLC x13
       ouis:[
-        // observed
-        '00:0d:c5','14:cc:20','a4:77:33','7c:8c:6c',
-        // registry: Ring Solutions, Ring LLC x13
         'b0:09:da','00:b4:63','18:7f:88','24:2b:d6','34:3e:a4','50:e4:67','54:e0:19',
         '5c:47:5e','64:9a:63','90:48:6c','9c:76:13','ac:9f:c3','c4:db:ad','cc:3b:fb'],
+      // observed on Ring hardware; registry says EchoStar / TP-Link / Google
+      ouisBroad:['00:0d:c5','14:cc:20','a4:77:33','7c:8c:6c'],
       cids:['0171'],  // registry: Amazon.com Services LLC (Ring is Amazon; also matches Echo etc.)
       svcs:[], names:['Ring'] },
     { id:'axon',   name:'AXON',   color:'var(--v-axon)',
@@ -797,13 +800,35 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       svcs:['fc81','fe6b','fe6c'],             // registry: Axon Enterprise; TASER International x2
       names:[] },
     { id:'flock',  name:'FLOCK',  color:'var(--v-flock)',
-      ouis:[
-        // observed on Flock cameras -- these are Espressif OUIs (ESP32 radio
-        // module), so any ESP32 device in range matches too
-        'a4:cf:12','24:6f:28','3c:71:bf','48:e7:29','98:cd:ac',
-        // registry: Flock Safety
-        'b4:1e:52'],
-      cids:[], svcs:[], names:['Flock','Falcon','Raven'] },
+      // Only OUI the IEEE registry assigns to Flock.
+      ouis:['b4:1e:52'],
+      // Radio modules and adjacent hardware seen inside Flock cameras --
+      // curated superset from lukeswitz/oui-spy-unified-blue (which credits
+      // colonelpanichacks/flock-you, zmattmanz/flock-detection,
+      // dougborg/AirHound, VirtuallyScott/flock-you), merged with the OUIs
+      // this project already carried. These are Liteon / Espressif / Silicon
+      // Labs / Murata / ShotSpotter etc., so they match plenty of unrelated
+      // hardware: they score as a weak hit, never a confident one.
+      ouisBroad:[
+        '00:18:0a','00:23:6c','00:40:8c','00:f4:8d','04:0d:84','08:3a:88',
+        '14:5a:fc','14:b5:cd','1c:34:f1','1c:b7:2c','24:0a:c4','24:6f:28',
+        '24:b2:b9','2c:f4:32','30:ae:a4','38:5b:44','3c:61:05','3c:71:bf',
+        '3c:91:80','48:27:ea','48:e7:29','58:00:e3','58:8e:81','5c:93:a2',
+        '60:62:01','64:6e:69','70:08:94','70:c9:4e','74:4c:a1','80:30:49',
+        '82:6b:f2','84:0d:8e','84:f3:eb','8c:aa:b5','90:35:ea','94:08:53',
+        '94:34:69','98:cd:ac','98:f4:ab','9c:2f:9d','9c:9c:1f','a0:c9:a0',
+        'a4:cf:12','ac:67:b2','ac:cc:8e','b4:e3:f9','b8:1e:a4','b8:35:32',
+        'bc:dd:c2','c0:35:32','c8:2b:96','cc:50:e3','d0:39:57','d4:11:d6',
+        'd8:a0:1d','d8:f3:bc','dc:54:75','e0:0a:f6','e0:4f:43','e4:aa:ea',
+        'e8:d0:fc','ec:1b:bd','ec:62:60','f0:82:c0','f4:6a:dd','f4:cf:a2',
+        'f8:a2:d6','fc:f5:c4'],
+      cids:['09c8'],          // XUNTONG -- battery pack in Flock cameras
+      // Raven gunshot-detector proprietary services. The generic ones it also
+      // advertises (0x180A/0x1809/0x1819) are deliberately absent: on their own
+      // they match any device-info or heart-rate peripheral.
+      svcs:['3100','3200','3300','3400','3500'],
+      names:['Flock','FlockCam','FlockOS','flocksafety','FS Ext Battery','FS-','FS_',
+             'Penguin','Pigvision','Falcon','Raven'] },
     { id:'dji',    name:'DJI',    color:'var(--v-dji)',
       ouis:[
         // registry: SZ DJI Technology x10, DJI Baiwang x3, DJI Osmo, SZ DJI Ronin
@@ -819,18 +844,21 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
       svcs:[], names:['Parrot','Anafi','Bebop'] },
     { id:'skydio', name:'SKYDIO', color:'var(--v-skydio)',
       ouis:['38:1d:14',                        // registry: Skydio Inc.
-            '24:69:8e'],                       // observed (registry: Shenzhen Mercury Communication)
+            ],                       // observed (registry: Shenzhen Mercury Communication),
+      // observed; registry says Shenzhen Mercury
+      ouisBroad:['24:69:8e'],
       cids:[], svcs:[], names:['Skydio'] },
     { id:'meta',   name:'META',   color:'var(--v-meta)',
       ouis:[
-        // observed on Ray-Ban Meta / Quest hardware
-        '7c:2a:9e','cc:66:0a','f4:03:43','5c:e9:1e','a4:c1:38','58:d5:6e','2c:41:a1','44:d9:e7','9c:d9:17',
         // registry: Luxottica x3, Essilor
         '98:59:49','80:aa:1c','38:47:12','00:1a:12',
         // registry: Meta Platforms x13, Facebook x2, Oculus VR
         '48:05:60','50:99:03','78:c4:fa','80:f3:ef','84:57:f7','88:25:08','94:f9:29',
         'b4:17:a8','c0:dd:8a','cc:a1:74','d0:b3:c2','d4:d6:59','f4:4e:35',
         '48:57:dd','a4:0e:2b','2c:26:17'],
+      // observed on Ray-Ban Meta / Quest hardware; registry attributes these
+      // to Apple, HPE, Telink, D-Link, Bose, Ubiquiti, Motorola
+      ouisBroad:['7c:2a:9e','cc:66:0a','f4:03:43','5c:e9:1e','a4:c1:38','58:d5:6e','2c:41:a1','44:d9:e7','9c:d9:17'],
       cids:['0d53','01ab','058e'],             // registry: Luxottica; Meta Platforms; Meta Platforms Technologies
       svcs:['fd5f','feb7','feb8'],             // registry: Meta Platforms Technologies; Meta Platforms x2 (Quest advertises FEB8)
       names:['Ray-Ban','Wayfarer','Oakley Meta','Quest'] },
@@ -860,22 +888,29 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   // the comma-separated list in `svc`), or a case-insensitive name substring.
   // Any signal wins -- BLE MACs are almost always randomized so CID/UUID/name
   // are what actually catches Meta glasses, Axon body cams, DJI drones, etc.
+  // Returns null, or {v, broad}. `broad` means the only thing that matched was
+  // an OUI belonging to a radio-module maker rather than the vendor -- true of
+  // every Espressif/Liteon OUI in the Flock list, so an unrelated ESP32 in
+  // range would otherwise be reported as a confident FLOCK sighting.
   function vendorFor(mac, cid, svcStr, name, addrType) {
     // Only a public address carries an IEEE OUI. Random-static / RPA / NRP
     // addresses are locally generated, so a matching first three bytes there
-    // is coincidence and was tagging random devices as a vendor hit.
+    // is coincidence.
     const prefix   = (mac && addrType === 'pub') ? mac.slice(0, 8).toLowerCase() : '';
     const cidLower = cid ? cid.toLowerCase() : '';
     const svcs     = svcStr ? svcStr.toLowerCase().split(',').map(s => s.replace(/^0x/, '').trim()) : [];
     const nameL    = name ? name.toLowerCase() : '';
+    let weak = null;
     for (const v of VENDORS) {
       if (!vendorEnabled.has(v.id)) continue;
-      if (prefix && v.ouis.includes(prefix)) return v;
-      if (cidLower && v.cids && v.cids.includes(cidLower)) return v;
-      if (svcs.length && v.svcs && v.svcs.some(u => svcs.includes(u))) return v;
-      if (nameL && v.names && v.names.some(n => nameL.includes(n.toLowerCase()))) return v;
+      if (prefix && v.ouis.includes(prefix)) return { v, broad: false };
+      if (cidLower && v.cids && v.cids.includes(cidLower)) return { v, broad: false };
+      if (svcs.length && v.svcs && v.svcs.some(u => svcs.includes(u))) return { v, broad: false };
+      if (nameL && v.names && v.names.some(n => nameL.includes(n.toLowerCase()))) return { v, broad: false };
+      if (!weak && prefix && v.ouisBroad && v.ouisBroad.includes(prefix)) weak = { v, broad: true };
     }
-    return null;
+    // A confident match on any vendor outranks a module-maker OUI on another.
+    return weak;
   }
 
   // --- Advert type mapping ----------------------------------------------
@@ -919,6 +954,7 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
 
   // --- Rendering: streaming append, cap at MAX_ROWS -------------------
   let paused = false;
+  let confidentOnly = false;
   let n = 0;
   let hits = 0;
   const chipCounts = {};
@@ -972,8 +1008,10 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
     if (tr & TR_CONNECTABLE)  keys.add('connectable');
     keys.forEach(bumpChip);
 
-    const vend = vendorFor(addr, mfrHex, svc, name, a.toLowerCase());
-    if (vend) {
+    const match = vendorFor(addr, mfrHex, svc, name, a.toLowerCase());
+    const vend  = match ? match.v : null;
+    const weak  = match ? match.broad : false;
+    if (vend && !(weak && confidentOnly)) {
       hits++;
       vendorHitCounts[vend.id]++;
       $('count-'+vend.id).textContent = vendorHitCounts[vend.id];
@@ -982,8 +1020,11 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
 
     n++;
     const rc = rssiCls(p.r);
-    const vendorTag = vend
-      ? '<span class="tag vendor" style="color:'+vend.color+';border-color:'+vend.color+'">'+vend.name+'</span>'
+    // "?" suffix = matched only a module-maker OUI, not the vendor itself.
+    const vendorTag = (vend && !(weak && confidentOnly))
+      ? '<span class="tag vendor'+(weak?' weak':'')+'" style="color:'+vend.color+';border-color:'+vend.color+'"'+
+        (weak?' title="module-maker OUI only -- not confirmed '+vend.name+'"':'')+'>'+
+        vend.name+(weak?'?':'')+'</span>'
       : '';
 
     let mfrDisplay = '';
@@ -993,9 +1034,11 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
 
     const tr_el = document.createElement('tr');
     tr_el.className = cls.cls;
-    if (vend) tr_el.classList.add('hit');
-    tr_el.dataset.keys = [...keys].join(' ');
-    tr_el.dataset.hit  = vend ? '1' : '0';
+    const counted = vend && !(weak && confidentOnly);
+    if (counted) tr_el.classList.add('hit');
+    tr_el.dataset.keys  = [...keys].join(' ');
+    tr_el.dataset.hit   = counted ? '1' : '0';
+    tr_el.dataset.weak  = (vend && weak) ? '1' : '0';
     tr_el.dataset.addr = addr.toLowerCase();
     tr_el.dataset.name = name.toLowerCase();
     tr_el.dataset.svc  = svc.toLowerCase();
@@ -1162,7 +1205,11 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   $('snapBtn').onclick = () => {
     const cols = ['idx','t_ms','ch','rssi','type','addr_type','address','name','svc','mfr','len'];
     const lines = [cols.join(',')];
+    // Export what the table is showing. Exporting hidden rows too meant
+    // filtering down to a vendor's hits and hitting CSV silently handed you
+    // every advert captured.
     rows.querySelectorAll('tr').forEach(tr => {
+      if (tr.style.display === 'none') return;
       const c = tr.children;
       const q = (s) => '"'+String(s||'').replace(/"/g,'""')+'"';
       lines.push([c[0].textContent, c[1].textContent, c[2].textContent, c[3].textContent,
@@ -1242,6 +1289,9 @@ o888bood8P'  o888ooooood8 o888ooooood8 8""88888P'  o8o        `8  o888o o888o   
   }
   updateGroupBadges();
   $('hitsOnly').onchange = () => applyFilter();
+  // Re-tagging existing rows would mean re-deriving each match, so this
+  // applies to adverts arriving from here on; Clear resets the view.
+  $('confidentOnly').onchange = () => { confidentOnly = $('confidentOnly').checked; applyFilter(); };
   $('filter').oninput = () => applyFilter();
 
   function parseTextFilter() {
