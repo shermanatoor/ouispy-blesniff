@@ -119,6 +119,18 @@ bool init() {
     if (!g_lock) return false;
 
     for (size_t i = 0; i < sizeof(CAP_TIERS) / sizeof(CAP_TIERS[0]); ++i) {
+        // A tier at or below GLOBAL_HDR_LEN would underflow g_dcap = g_cap -
+        // GLOBAL_HDR_LEN (both size_t) to near SIZE_MAX, and the header write
+        // in reset_ring_locked() below would itself already overflow such a
+        // tiny allocation -- silent heap corruption on the very first init().
+        // Only reachable via a misconfigured -DOUISPY_SESSION_CAP override,
+        // but that override is real (tools/hwtest/wrap_test.py uses it), so
+        // guard it rather than trust every value it's ever built with.
+        if (CAP_TIERS[i] <= GLOBAL_HDR_LEN) {
+            Serial.printf("[session_pcap] tier %u FAILED (%u bytes <= header size, skipped)\n",
+                          (unsigned)i, (unsigned)CAP_TIERS[i]);
+            continue;
+        }
         uint8_t* p = (uint8_t*)heap_caps_malloc(CAP_TIERS[i],
                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (p) {
@@ -148,8 +160,8 @@ bool init() {
 }
 
 State       state()      { return g_state; }
-const char* state_name() {
-    switch (g_state) {
+const char* state_name(State s) {
+    switch (s) {
         case State::IDLE:      return "idle";
         case State::RECORDING: return "recording";
         case State::PAUSED:    return "paused";
@@ -157,6 +169,7 @@ const char* state_name() {
     }
     return "?";
 }
+const char* state_name() { return state_name(g_state); }
 
 bool cmd_record() {
     if (!g_buf || !g_lock) return false;
@@ -242,6 +255,27 @@ uint32_t dropped() {
     uint32_t d = g_dropped;
     xSemaphoreGive(g_lock);
     return d;
+}
+
+// size()/dropped()/state() above each take (or skip) the lock independently,
+// so a caller building one status report out of separate calls to them can
+// still get a self-inconsistent composite -- pcap_writer_task is free to run
+// append()/reclaim_locked() between any two of those calls. get_status()
+// takes the lock once for all three fields together, for exactly that use.
+Status get_status() {
+    Status st;
+    if (!g_lock) {
+        st.size = GLOBAL_HDR_LEN;
+        st.dropped = 0;
+        st.state = g_state;
+        return st;
+    }
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    st.size    = GLOBAL_HDR_LEN + g_data;
+    st.dropped = g_dropped;
+    st.state   = g_state;
+    xSemaphoreGive(g_lock);
+    return st;
 }
 
 size_t read_chunk(size_t offset, uint8_t* out, size_t len) {

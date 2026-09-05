@@ -12,17 +12,20 @@ namespace nordic_pcap {
 // + 4-byte access address
 // + 2-byte LL header (PDU type / flags / length)
 // + 6-byte advertising address
+// + 6-byte target address (ADV_DIRECT_IND only, synthesized zero -- see build_frame())
 // + N-byte AdvData
 // + 3-byte CRC (synthesized zero)
 constexpr size_t PHDR_LEN         = 10;
 constexpr size_t ACCESS_ADDR_LEN  = 4;
 constexpr size_t LL_HDR_LEN       = 2;
 constexpr size_t ADV_ADDR_LEN     = 6;
+constexpr size_t TARGET_ADDR_LEN  = 6;
 constexpr size_t CRC_LEN          = 3;
 
-// Fixed overhead around the AdvData payload.
+// Fixed overhead around the AdvData payload. Sized for the worst case
+// (ADV_DIRECT_IND, which carries TargetA); other PDU types use less.
 constexpr size_t FRAME_OVERHEAD =
-    PHDR_LEN + ACCESS_ADDR_LEN + LL_HDR_LEN + ADV_ADDR_LEN + CRC_LEN;
+    PHDR_LEN + ACCESS_ADDR_LEN + LL_HDR_LEN + ADV_ADDR_LEN + TARGET_ADDR_LEN + CRC_LEN;
 
 // The advertising PDU header length field is 6 bits and covers AdvA (6 bytes)
 // plus AdvData, so AdvData tops out here. build_frame() truncates to it.
@@ -49,6 +52,7 @@ constexpr uint32_t ADV_ACCESS_ADDR   = 0x8E89BED6;
 // CRC bits are cleared because we synthesize zero CRC bytes -- claiming
 // "checked" would make Wireshark flag every frame as CRC-bad.
 constexpr uint16_t PHDR_FLAGS        = 0x0013;
+constexpr uint16_t PHDR_FLAG_SIGNAL_POWER_VALID = 0x0002;
 
 // Serialize one scan::Frame into a LE_LL_WITH_PHDR buffer.
 // `out` must have room for FRAME_OVERHEAD + f.payload_len bytes.

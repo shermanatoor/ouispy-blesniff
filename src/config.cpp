@@ -3,13 +3,14 @@
 #include <Preferences.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace config {
 
 namespace {
 
 constexpr const char* NS      = "blesniff";
-constexpr const char* VERSION = "1.1.1";
+constexpr const char* VERSION = "1.1.2";
 
 Preferences prefs;
 Config      cfg;
@@ -20,6 +21,16 @@ Config      cfg;
 // prior synchronization. This spinlock guards every in-memory read/write of
 // cfg; it never wraps the blocking Preferences/NVS flash I/O in save()/load().
 portMUX_TYPE g_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Guards the single global `prefs` object's begin()/putX()/end() sequence in
+// save(), which is reachable concurrently from the AsyncTCP task and the
+// Arduino loop task. Preferences::begin() silently returns false (unchecked,
+// same as upstream) if another task's session is still open rather than
+// blocking, so without this a second concurrent save() would putX() against
+// the first save()'s handle and then close it out from under it -- corrupting
+// or silently dropping whichever fields hadn't been written yet. A real mutex
+// (not the portMUX_TYPE spinlock above), since the NVS I/O it guards blocks.
+SemaphoreHandle_t g_prefs_mutex = xSemaphoreCreateMutex();
 
 // The last window value a caller explicitly asked for, before clamp() capped
 // it against the interval in effect at the time. set_scan_interval() re-derives
@@ -97,6 +108,10 @@ void save() {
     snapshot = cfg;
     portEXIT_CRITICAL(&g_cfg_mux);
 
+    // g_prefs_mutex serializes this against any other concurrent save() --
+    // see its declaration above for why that matters for the shared `prefs`
+    // object.
+    xSemaphoreTake(g_prefs_mutex, portMAX_DELAY);
     prefs.begin(NS, false);
     prefs.putUShort("scan_win", snapshot.scan_window_ms);
     prefs.putUShort("scan_int", snapshot.scan_interval_ms);
@@ -104,11 +119,21 @@ void save() {
     prefs.putString("ap_ssid",  snapshot.ap_ssid);
     prefs.putString("ap_pass",  snapshot.ap_pass);
     prefs.end();
+    xSemaphoreGive(g_prefs_mutex);
 }
+
+// Every setter below calls clamp() itself before releasing g_cfg_mux, not
+// just inside save() afterward -- otherwise a concurrent get() in the gap
+// between a setter's portEXIT_CRITICAL and save()'s own portENTER_CRITICAL
+// could observe cfg in a state clamp() exists specifically to rule out (e.g.
+// window > max_window_for(interval), or an entire filter gate zeroed).
+// save() still re-clamps under its own lock too; that second pass is a
+// cheap no-op once the setter has already normalized cfg.
 
 void reset_defaults() {
     portENTER_CRITICAL(&g_cfg_mux);
     apply_defaults();
+    clamp();
     g_last_req_window = cfg.scan_window_ms;
     portEXIT_CRITICAL(&g_cfg_mux);
     save();
@@ -118,6 +143,7 @@ void set_scan_window(uint16_t ms) {
     portENTER_CRITICAL(&g_cfg_mux);
     g_last_req_window  = ms;
     cfg.scan_window_ms = ms;
+    clamp();
     portEXIT_CRITICAL(&g_cfg_mux);
     save();
 }
@@ -130,6 +156,7 @@ void set_scan_interval(uint16_t ms) {
     // interval=100) followed by INTERVAL 400 restores 150 (now legal under
     // the new interval) instead of leaving window stuck at 50.
     cfg.scan_window_ms = g_last_req_window;
+    clamp();
     portEXIT_CRITICAL(&g_cfg_mux);
     save();
 }
@@ -137,8 +164,9 @@ void set_scan_interval(uint16_t ms) {
 void set_ftmask(uint8_t m) {
     portENTER_CRITICAL(&g_cfg_mux);
     cfg.ft_mask = m;
+    clamp();
     portEXIT_CRITICAL(&g_cfg_mux);
-    save();   // save() normalizes
+    save();
 }
 
 void set_scan_params(uint16_t window_ms, uint16_t interval_ms) {
@@ -146,8 +174,9 @@ void set_scan_params(uint16_t window_ms, uint16_t interval_ms) {
     g_last_req_window    = window_ms;
     cfg.scan_window_ms   = window_ms;
     cfg.scan_interval_ms = interval_ms;
+    clamp();   // sees both new values together
     portEXIT_CRITICAL(&g_cfg_mux);
-    save();   // clamp() inside save() now sees both new values together
+    save();
 }
 
 void set_ap(const char* ssid, const char* pass) {
@@ -157,6 +186,7 @@ void set_ap(const char* ssid, const char* pass) {
         size_t l = strlen(pass);
         if (l >= 8 && l <= 63) strlcpy(cfg.ap_pass, pass, sizeof(cfg.ap_pass));
     }
+    clamp();
     portEXIT_CRITICAL(&g_cfg_mux);
     save();
 }

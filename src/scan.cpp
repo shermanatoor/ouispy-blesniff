@@ -34,15 +34,26 @@ std::atomic<uint32_t> g_per_sec     {0};
 std::atomic<uint32_t> g_last_pps_ms {0};
 std::atomic<uint32_t> g_frame_idx   {0};
 
-bool ring_alloc(Ring& r, size_t slot_count, bool prefer_psram) {
-    r.capacity = slot_count;
+// `fallback_slot_count` is what gets allocated (from internal SRAM) if the
+// PSRAM attempt at `slot_count` fails -- psramFound() only reports that PSRAM
+// hardware exists, not that a specific contiguous block is still free (e.g.
+// session_pcap::init() already claims up to 6MB of it before scan::init()
+// runs), so this path is reachable with PSRAM present. Falling back to the
+// same large `slot_count` would commit the PSRAM-sized buffer to internal
+// SRAM instead -- SRAM shared with the WiFi/BT stacks and AsyncTCP/ArduinoJson
+// buffers -- defeating the whole point of sizing the no-PSRAM case smaller.
+bool ring_alloc(Ring& r, size_t slot_count, size_t fallback_slot_count, bool prefer_psram) {
     r.head = 0; r.tail = 0; r.dropped = 0;
-    size_t bytes = slot_count * sizeof(Frame);
     if (prefer_psram && psramFound()) {
+        size_t bytes = slot_count * sizeof(Frame);
         r.slots = (Frame*)ps_malloc(bytes);
-        if (r.slots) return true;
+        if (r.slots) {
+            r.capacity = slot_count;
+            return true;
+        }
     }
-    r.slots = (Frame*)malloc(bytes);
+    r.capacity = fallback_slot_count;
+    r.slots = (Frame*)malloc(fallback_slot_count * sizeof(Frame));
     return r.slots != nullptr;
 }
 
@@ -195,8 +206,13 @@ void start_scan() {
     NimBLEScan* s = NimBLEDevice::getScan();
     s->stop();
     s->setActiveScan(false);           // passive — never emit SCAN_REQ
-    s->setInterval(config::get().scan_interval_ms);
-    s->setWindow(config::get().scan_window_ms);
+    // One snapshot, not two separate config::get() calls: a config write
+    // landing between them could otherwise hand NimBLE a window/interval pair
+    // that never existed together in any single config generation, violating
+    // the half-interval coexistence invariant clamp() enforces on every write.
+    const config::Config sc = config::get();
+    s->setInterval(sc.scan_interval_ms);
+    s->setWindow(sc.scan_window_ms);
     s->setDuplicateFilter(false);      // capture every advert, even repeats
     // Do not retain results. NimBLE's default (0xFF) disables its own cap and
     // heap-allocates a NimBLEAdvertisedDevice for every distinct address for
@@ -213,10 +229,12 @@ void start_scan() {
 
 bool init() {
     bool have_psram = psramFound();
-    size_t pcap_slots = have_psram ? 256 : 16;
-    size_t dash_slots = have_psram ? 64  : 8;
-    if (!ring_alloc(ring_pcap, pcap_slots, true)) return false;
-    if (!ring_alloc(ring_dash, dash_slots, true)) return false;
+    // psramFound() means PSRAM hardware exists, not that a ~90KB contiguous
+    // block is still free -- session_pcap::init() runs first and can already
+    // have claimed most of it. ring_alloc() falls back to the smaller
+    // no-PSRAM slot counts (not the PSRAM-sized ones) if ps_malloc() fails.
+    if (!ring_alloc(ring_pcap, 256, 16, have_psram)) return false;
+    if (!ring_alloc(ring_dash, 64,  8,  have_psram)) return false;
 
     NimBLEDevice::init("");
     // No setPower — passive scan never TXes, so TX-power tuning is moot.
